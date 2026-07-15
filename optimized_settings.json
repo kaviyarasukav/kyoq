@@ -1,0 +1,12 @@
+{
+  "SOLUSD_1h": {
+    "fast_period": 10,
+    "slow_period": 67,
+    "updated_at": "2026-07-15 18:25:25"
+  },
+  "SOLUSD_30m": {
+    "fast_period": 7,
+    "slow_period": 73,
+    "updated_at": "2026-07-15 18:40:42"
+  }
+}
