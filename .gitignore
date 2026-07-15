@@ -1,0 +1,21 @@
+# API Keys and Environment Variables
+.env
+.env.local
+
+# Logs and Process Files
+*.log
+*.pid
+debug_startup.log
+bot.log
+bot.pid
+redirection_err.log
+
+# Python Caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# OS files
+.DS_Store
+Thumbs.db
