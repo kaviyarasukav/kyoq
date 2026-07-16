@@ -1,0 +1,62 @@
+# Genetic Algorithm Strategy Optimizer Report
+
+This report explains how the Genetic Algorithm (GA) optimizes technical indicators in [delta_monitor.py](file:///z:/kyoq/delta_monitor.py).
+
+---
+
+## 1. Core Components
+
+*   **Optimizer Entry**: [run_genetic_optimization](file:///z:/kyoq/delta_monitor.py#L336) orchestrates the evolutionary cycles.
+*   **Backtest Evaluator**: [backtest_ema_crossover](file:///z:/kyoq/delta_monitor.py#L268) simulates trading on historical candles.
+*   **Settings Persistence**: [save_optimized_settings](file:///z:/kyoq/delta_monitor.py#L249) writes results to [optimized_settings.json](file:///z:/kyoq/optimized_settings.json).
+
+---
+
+## 2. Evolutionary Process Flow
+
+```mermaid
+graph TD
+    A[Fetch 250 Historical Candles] --> B[Initialize Population: 30 Random EMA Pairs]
+    B --> C[Evaluate Fitness for Each Pair]
+    C --> D{Generations Limit Met?}
+    D -- No --> E[Select Top 5 Elites]
+    E --> F[Select Parents via Tournament Selection]
+    F --> G[Crossover: Mix Fast & Slow Periods]
+    G --> H[Mutate Periods with 25% Probability]
+    H --> C
+    D -- Yes --> I[Save Best Pair to optimized_settings.json]
+```
+
+### Step 1: Population Initialization
+*   **Size**: 30 individuals.
+*   **Structure**: Each individual is a tuple `(fast_period, slow_period)`.
+*   **Constraints**: 
+    *   `fast_period` range: `[5, 40]`
+    *   `slow_period` range: `[fast_period + 10, 120]`
+
+### Step 2: Fitness Evaluation
+Each pair is evaluated on 250 historical candles using a simulated stop-and-reverse (SAR) crossover backtest.
+*   **Fitness Equation**:
+    $$\text{Fitness} = \text{Net Profit \%} - (\text{Max Drawdown \%} \times 0.75)$$
+*   **Penalty**: If the strategy executes fewer than 3 trades, a penalty of $-100.0$ is applied to prevent selection of inactive strategies.
+
+### Step 3: Selection and Elitism
+*   The top **5** individuals (highest fitness score) are preserved unchanged (elites) for the next generation.
+
+### Step 4: Crossover (Mating)
+The remaining 25 slots of the next generation are filled by mating parents chosen from the current generation using a tournament selection of size 3:
+*   **Fast Period**: Selected randomly from parent 1 or parent 2.
+*   **Slow Period**: Selected randomly from parent 1 or parent 2 (guaranteed to be $\ge \text{fast\_period} + 10$).
+
+### Step 5: Mutation
+Each child has a mutation rate applied:
+*   **Fast Period**: $25\%$ chance to mutate by $\pm 1$ or $\pm 2$.
+*   **Slow Period**: $25\%$ chance to mutate by $\pm 2$ or $\pm 5$.
+
+---
+
+## 3. How Settings are Updated
+
+When optimization finishes:
+1. The best-performing EMA pair is saved to [optimized_settings.json](file:///z:/kyoq/optimized_settings.json) under the key `{symbol}_{resolution}`.
+2. The live monitor ([run_live_monitor](file:///z:/kyoq/delta_monitor.py#L1240)) automatically checks this JSON file during initialization to override default `(9, 21)` parameters with the optimized strategy parameters.
