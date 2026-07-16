@@ -18,7 +18,11 @@ def make_request(url, data=None, headers=None, method="POST"):
         with urllib.request.urlopen(req, data=data) as response:
             return json.loads(response.read().decode('utf-8'))
     except urllib.error.HTTPError as e:
-        return json.loads(e.read().decode('utf-8'))
+        body = e.read().decode('utf-8')
+        try:
+            return json.loads(body)
+        except Exception:
+            return {"error": str(e), "body": body}
 
 def get_device_code():
     url = "https://github.com/login/device/code"
