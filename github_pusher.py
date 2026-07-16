@@ -86,8 +86,8 @@ def push_repo(token):
             
     print("Repository created or already exists. Uploading files...")
     
-    # Upload all relevant files in the directory
-    files_to_upload = [f for f in os.listdir('.') if os.path.isfile(f) and not f.endswith(('.log', '.pid', '.zip', '.pyc', '.pyd')) and not f.startswith('__')]
+    # Upload all relevant files in the directory, strictly excluding private credentials
+    files_to_upload = [f for f in os.listdir('.') if os.path.isfile(f) and not f.endswith(('.log', '.pid', '.zip', '.pyc', '.pyd')) and not f.startswith('__') and not f.startswith('.env')]
     
     for file_name in files_to_upload:
         if not os.path.exists(file_name):
