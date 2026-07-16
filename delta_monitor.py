@@ -80,13 +80,13 @@ def clear_screen():
 
 def load_env():
     """Loads environment variables from .env file in the same directory."""
-    # Clear stale keys in memory starting with DELTA_
-    for k in list(os.environ.keys()):
-        if k.startswith("DELTA_"):
-            os.environ.pop(k, None)
-            
     env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
     if os.path.exists(env_path):
+        # Clear stale keys in memory starting with DELTA_
+        for k in list(os.environ.keys()):
+            if k.startswith("DELTA_"):
+                os.environ.pop(k, None)
+                
         with open(env_path, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
@@ -114,7 +114,7 @@ def is_process_running(pid):
             out = subprocess.check_output(f"tasklist /FI \"PID eq {pid}\"", shell=True, stderr=subprocess.DEVNULL)
             return str(pid) in out.decode('utf-8', errors='ignore')
         except Exception:
-            return True
+            return False
 
 def start_daemon(args_list):
     """Spawns the script in background mode as a detached process."""
@@ -267,13 +267,14 @@ def save_optimized_settings(symbol, resolution, fast_period, slow_period):
     except Exception as e:
         print(f"{RED}Error saving optimized settings: {e}{RESET}")
 
-def backtest_ema_crossover(candles, fast_period, slow_period):
+def backtest_ema_crossover(candles, fast_period, slow_period, start_eval_idx=None, end_eval_idx=None):
     """
     Simulates Advanced Trend Following with:
     1. MTF Trend Filtering (Macro EMA)
     2. Fractional Kelly / Compounding Sizing
     3. Pyramiding (Scale-in on ATR moves)
     4. ATR Trailing Stops
+    Supports warm up on historical data before evaluating strategy metrics.
     """
     if len(candles) < (slow_period * 4) + 5:
         return 0.0, 100.0, 0, 0.0, 0.0
@@ -291,7 +292,20 @@ def backtest_ema_crossover(candles, fast_period, slow_period):
     equity = initial_equity
     equity_curve = [equity]
     
-    start_idx = slow_period * 4
+    warmup_idx = slow_period * 4
+    if start_eval_idx is None:
+        start_eval_idx = warmup_idx
+    else:
+        start_eval_idx = max(warmup_idx, start_eval_idx)
+        
+    if end_eval_idx is None:
+        end_eval_idx = len(closes)
+    else:
+        end_eval_idx = min(len(closes), end_eval_idx)
+        
+    if start_eval_idx >= end_eval_idx:
+        return 0.0, 100.0, 0, 0.0, 0.0
+        
     position = 0 # 0 = flat, 1 = long, -1 = short
     trades_count = 0
     trade_returns = []
@@ -308,7 +322,7 @@ def backtest_ema_crossover(candles, fast_period, slow_period):
     base_risk = 0.02 # 2% per trade, compounds with equity
     position_size_dollars = 0.0
     
-    for i in range(start_idx, len(closes)):
+    for i in range(warmup_idx, end_eval_idx):
         curr_close = closes[i]
         prev_close = closes[i-1]
         
@@ -322,9 +336,10 @@ def backtest_ema_crossover(candles, fast_period, slow_period):
             
         # 1. Update Equity & Trailing Stops if in a position
         if position == 1:
-            # Mark to market equity update
-            bar_return = (curr_close - prev_close) / prev_close
-            equity += position_size_dollars * bar_return
+            if i >= start_eval_idx:
+                # Mark to market equity update
+                bar_return = (curr_close - prev_close) / prev_close
+                equity += position_size_dollars * bar_return
             
             # Trailing stop update
             if curr_close > highest_price:
@@ -336,20 +351,23 @@ def backtest_ema_crossover(candles, fast_period, slow_period):
             # Pyramiding (Scale In)
             if curr_close > avg_price + (curr_atr * 1.5) and pyramid_count < 3:
                 pyramid_count += 1
-                add_size = equity * (base_risk / 2) # Add half-size
-                position_size_dollars += add_size
+                if i >= start_eval_idx:
+                    add_size = equity * (base_risk / 2) # Add half-size
+                    position_size_dollars += add_size
                 avg_price = (avg_price + curr_close) / 2 # simplified avg price
                 
             # Exit Conditions (Stop Loss or Trend Reversal)
             if curr_close <= stop_loss or curr_fast < curr_slow:
-                trade_return = (curr_close - entry_price) / entry_price
-                trade_returns.append(trade_return)
+                if i >= start_eval_idx:
+                    trade_return = (curr_close - entry_price) / entry_price
+                    trade_returns.append(trade_return)
+                    trades_count += 1
                 position = 0
-                trades_count += 1
                 
         elif position == -1:
-            bar_return = (prev_close - curr_close) / prev_close
-            equity += position_size_dollars * bar_return
+            if i >= start_eval_idx:
+                bar_return = (prev_close - curr_close) / prev_close
+                equity += position_size_dollars * bar_return
             
             if curr_close < lowest_price:
                 lowest_price = curr_close
@@ -359,19 +377,22 @@ def backtest_ema_crossover(candles, fast_period, slow_period):
                     
             if curr_close < avg_price - (curr_atr * 1.5) and pyramid_count < 3:
                 pyramid_count += 1
-                add_size = equity * (base_risk / 2)
-                position_size_dollars += add_size
+                if i >= start_eval_idx:
+                    add_size = equity * (base_risk / 2)
+                    position_size_dollars += add_size
                 avg_price = (avg_price + curr_close) / 2
                 
             if curr_close >= stop_loss or curr_fast > curr_slow:
-                trade_return = (entry_price - curr_close) / entry_price
-                trade_returns.append(trade_return)
+                if i >= start_eval_idx:
+                    trade_return = (entry_price - curr_close) / entry_price
+                    trade_returns.append(trade_return)
+                    trades_count += 1
                 position = 0
-                trades_count += 1
                 
         # 2. Entry Conditions (MTF Filtered)
         if position == 0:
-            equity_curve.append(equity) # Only snapshot equity on flat to speed up calculation
+            if i >= start_eval_idx:
+                equity_curve.append(equity) # Only snapshot equity on flat to speed up calculation
             
             # LONG ENTRY
             if curr_fast > curr_slow and curr_close > curr_macro:
@@ -380,7 +401,10 @@ def backtest_ema_crossover(candles, fast_period, slow_period):
                 avg_price = curr_close
                 highest_price = curr_close
                 stop_loss = entry_price - (curr_atr * 2)
-                position_size_dollars = equity * base_risk * 10 # 10x leverage equivalent based on risk
+                if i >= start_eval_idx:
+                    position_size_dollars = equity * base_risk * 10 # 10x leverage equivalent based on risk
+                else:
+                    position_size_dollars = 0.0
                 pyramid_count = 0
                 
             # SHORT ENTRY
@@ -390,7 +414,10 @@ def backtest_ema_crossover(candles, fast_period, slow_period):
                 avg_price = curr_close
                 lowest_price = curr_close
                 stop_loss = entry_price + (curr_atr * 2)
-                position_size_dollars = equity * base_risk * 10
+                if i >= start_eval_idx:
+                    position_size_dollars = equity * base_risk * 10
+                else:
+                    position_size_dollars = 0.0
                 pyramid_count = 0
                 
     net_profit_pct = ((equity - initial_equity) / initial_equity) * 100.0
@@ -417,17 +444,17 @@ def backtest_ema_crossover(candles, fast_period, slow_period):
 def get_backtest_candle_count(resolution):
     """Dynamically scale historical candle count to prevent curve-fitting."""
     res_lower = resolution.lower()
-    if '1m' in res_lower or '5m' in res_lower:
+    if res_lower in ['1m', '3m', '5m']:
         return 10000
-    elif '15m' in res_lower or '30m' in res_lower:
+    elif res_lower in ['15m', '30m']:
         return 5000
-    elif '1h' in res_lower:
+    elif res_lower in ['1h', '2h']:
         return 3000
-    elif '4h' in res_lower:
+    elif res_lower in ['4h']:
         return 2000
-    elif '1d' in res_lower:
+    elif res_lower in ['1d']:
         return 500
-    elif '1w' in res_lower:
+    elif res_lower in ['1w']:
         return 150
     else:
         return 2000
@@ -438,10 +465,10 @@ def get_ema_ranges(resolution):
     Slow range requires a minimum period distance from Fast EMA.
     """
     res_lower = resolution.lower()
-    if '1m' in res_lower or '5m' in res_lower or '15m' in res_lower:
+    if res_lower in ['1m', '3m', '5m', '15m']:
         # Scalping timeframes: slow EMAs filter high-frequency noise
         return (10, 50), (50, 200)
-    elif '30m' in res_lower or '1h' in res_lower or '4h' in res_lower:
+    elif res_lower in ['30m', '1h', '2h', '4h']:
         # Balanced trend following
         return (8, 30), (30, 120)
     else:
@@ -470,8 +497,6 @@ def run_genetic_optimization_inner(candles, resolution, generations, pop_size, e
     Now implements Out-of-Sample (OOS) 70/30 Holdout Validation.
     """
     split_idx = int(len(candles) * 0.7)
-    train_candles = candles[:split_idx]
-    test_candles = candles[split_idx:]
     
     fast_range, slow_range = get_ema_ranges(resolution)
     
@@ -489,7 +514,7 @@ def run_genetic_optimization_inner(candles, resolution, generations, pop_size, e
     for gen in range(1, generations + 1):
         scored_pop = []
         for fast, slow in population:
-            profit, max_dd, trades, win_rate, profit_factor = backtest_ema_crossover(train_candles, fast, slow)
+            profit, max_dd, trades, win_rate, profit_factor = backtest_ema_crossover(candles, fast, slow, end_eval_idx=split_idx)
             # Sharpe-like expectancy fitness formula
             fitness = profit * (1.0 + win_rate) * min(3.0, profit_factor) - (max_dd * 0.75)
             if trades < 10: # Lowered to 10 because it's only 70% of the data
@@ -542,12 +567,12 @@ def run_genetic_optimization_inner(candles, resolution, generations, pop_size, e
     # --- Out-of-Sample Validation (Testing) ---
     final_scored = []
     for fast, slow in population:
-        tr_p, tr_dd, tr_tr, tr_wr, tr_pf = backtest_ema_crossover(train_candles, fast, slow)
+        tr_p, tr_dd, tr_tr, tr_wr, tr_pf = backtest_ema_crossover(candles, fast, slow, end_eval_idx=split_idx)
         train_fitness = tr_p * (1.0 + tr_wr) * min(3.0, tr_pf) - (tr_dd * 0.75)
         if tr_tr < 10:
             train_fitness -= 200.0
             
-        te_p, te_dd, te_tr, te_wr, te_pf = backtest_ema_crossover(test_candles, fast, slow)
+        te_p, te_dd, te_tr, te_wr, te_pf = backtest_ema_crossover(candles, fast, slow, start_eval_idx=split_idx)
         test_fitness = te_p * (1.0 + te_wr) * min(3.0, te_pf) - (te_dd * 0.75)
         
         # Penalize if OOS performance crashes (curve-fitting detection)
@@ -573,8 +598,7 @@ def run_genetic_optimization_with_params(symbol, resolution, candles, generation
     Now uses 70/30 Out-of-Sample Holdout testing to prove edge.
     """
     split_idx = int(len(candles) * 0.7)
-    train_candles = candles[:split_idx]
-    test_candles = candles[split_idx:]
+    train_count = split_idx
 
     fast_range, slow_range = get_ema_ranges(resolution)
 
@@ -588,11 +612,11 @@ def run_genetic_optimization_with_params(symbol, resolution, candles, generation
     stagnant_gens = 0
     tourn_size = max(3, pop_size // 10)
     
-    print(f"Evolving populations over {generations} generations (Training on {len(train_candles)} candles)...")
+    print(f"Evolving populations over {generations} generations (Training on {train_count} candles)...")
     for gen in range(1, generations + 1):
         scored_pop = []
         for fast, slow in population:
-            profit, max_dd, trades, win_rate, profit_factor = backtest_ema_crossover(train_candles, fast, slow)
+            profit, max_dd, trades, win_rate, profit_factor = backtest_ema_crossover(candles, fast, slow, end_eval_idx=split_idx)
             fitness = profit * (1.0 + win_rate) * min(3.0, profit_factor) - (max_dd * 0.75)
             if trades < 10:
                 fitness -= 200.0
@@ -643,15 +667,15 @@ def run_genetic_optimization_with_params(symbol, resolution, candles, generation
             
         population = next_pop
         
-    print(BOLD + CYAN + f"\nRunning Out-of-Sample (OOS) Validation on {len(test_candles)} unseen candles..." + RESET)
+    print(BOLD + CYAN + f"\nRunning Out-of-Sample (OOS) Validation on {len(candles) - split_idx} unseen candles..." + RESET)
     final_scored = []
     for fast, slow in population:
-        tr_p, tr_dd, tr_tr, tr_wr, tr_pf = backtest_ema_crossover(train_candles, fast, slow)
+        tr_p, tr_dd, tr_tr, tr_wr, tr_pf = backtest_ema_crossover(candles, fast, slow, end_eval_idx=split_idx)
         train_fitness = tr_p * (1.0 + tr_wr) * min(3.0, tr_pf) - (tr_dd * 0.75)
         if tr_tr < 10:
             train_fitness -= 200.0
             
-        te_p, te_dd, te_tr, te_wr, te_pf = backtest_ema_crossover(test_candles, fast, slow)
+        te_p, te_dd, te_tr, te_wr, te_pf = backtest_ema_crossover(candles, fast, slow, start_eval_idx=split_idx)
         test_fitness = te_p * (1.0 + te_wr) * min(3.0, te_pf) - (te_dd * 0.75)
         
         if te_p <= 0 or test_fitness < (train_fitness * 0.2):
@@ -844,7 +868,7 @@ def run_autopilot_setup(resolution='1h', generations=10):
         "--poll-interval", "15"
     ]
     
-    api_active = bool(os.getenv("DELTA_API_KEY_1") or os.getenv("DELTA_API_KEY"))
+    api_active = bool(os.getenv("DELTA_API_KEY_1") or os.getenv("DELTA_API_KEY") or os.getenv("DELTA_API_KEY_3"))
     if api_active:
         daemon_args += ["--trade", "--trade-size", "1"]
         print(f"{YELLOW}[Auto-Pilot] Trading API credentials found. Enabling autonomous crossover trading!{RESET}")
@@ -873,7 +897,12 @@ def save_env_keys(account_idx, key, secret, name=None):
     if name:
         env_dict[f"DELTA_ACCOUNT_NAME_{account_idx}"] = name
     else:
-        env_dict[f"DELTA_ACCOUNT_NAME_{account_idx}"] = "LONG_Account" if account_idx == 1 else "SHORT_Account"
+        if account_idx == 1:
+            env_dict[f"DELTA_ACCOUNT_NAME_{account_idx}"] = "LONG_Account"
+        elif account_idx == 2:
+            env_dict[f"DELTA_ACCOUNT_NAME_{account_idx}"] = "SHORT_Account"
+        else:
+            env_dict[f"DELTA_ACCOUNT_NAME_{account_idx}"] = "BOTH_Account"
         
     if account_idx == 1:
         env_dict["DELTA_API_KEY"] = key
@@ -927,7 +956,10 @@ def make_authenticated_request(method, path, query_params=None, payload=None, ac
     Makes a signed, authenticated request to Delta Exchange API.
     Supports routing to Account 1 or Account 2 by account_idx.
     """
-    if account_idx == 2:
+    if account_idx == 3:
+        api_key = os.getenv("DELTA_API_KEY_3")
+        api_secret = os.getenv("DELTA_API_SECRET_3")
+    elif account_idx == 2:
         api_key = os.getenv("DELTA_API_KEY_2")
         api_secret = os.getenv("DELTA_API_SECRET_2")
     else:
@@ -1038,12 +1070,15 @@ def fetch_and_show_account():
     # Check which accounts are configured
     acc1_configured = bool(os.getenv("DELTA_API_KEY_1") or os.getenv("DELTA_API_KEY"))
     acc2_configured = bool(os.getenv("DELTA_API_KEY_2"))
+    acc3_configured = bool(os.getenv("DELTA_API_KEY_3"))
     
     accounts_to_check = []
     if acc1_configured:
         accounts_to_check.append((1, os.getenv("DELTA_ACCOUNT_NAME_1") or "Account 1 (Main/LONG)"))
     if acc2_configured:
         accounts_to_check.append((2, os.getenv("DELTA_ACCOUNT_NAME_2") or "Account 2 (Sub/SHORT)"))
+    if acc3_configured:
+        accounts_to_check.append((3, os.getenv("DELTA_ACCOUNT_NAME_3") or "Account 3 (Both LONG/SHORT)"))
         
     if not accounts_to_check:
         print(f"  {RED}No API credentials configured. Please configure in Settings (Option 10).{RESET}\n")
@@ -1237,7 +1272,7 @@ def fetch_candle_data(symbol, resolution, candle_count):
     last_err = "No data"
     
     for count in attempts:
-        if count < 40:
+        if count < 2:
             continue
             
         seconds_needed = int(count * 2.5 * resolution_to_seconds(resolution))
@@ -1433,7 +1468,7 @@ def calculate_atr(candles, period=14):
     """
     Calculates the Average True Range (ATR).
     """
-    if len(candles) < period:
+    if len(candles) < period + 1:
         return [0.0] * len(candles)
         
     tr_list = [0.0]
@@ -1613,9 +1648,9 @@ def display_dashboard(symbol, resolution, candles, error_msg=None, show_candles=
 
     # Draw ASCII Chart and History Table if explicitly asked
     if show_candles:
-        plot_candles = candles[-15:] if len(candles) > 15 else candles
+        plot_candles = candles
         
-        print(BOLD + MAGENTA + "--- Candlestick Trend Chart (Latest 15 Candles) ---" + RESET)
+        print(BOLD + MAGENTA + f"--- Candlestick Trend Chart (Latest {len(plot_candles)} Candles) ---" + RESET)
         print(render_ascii_chart(plot_candles, height=12))
         print()
 
@@ -1722,11 +1757,22 @@ def run_live_monitor(symbols, resolution, poll_interval=15, trade=False, trade_s
     print(BOLD + CYAN + "└" + "─"*68 + "┘" + RESET)
     
     # Configure and print active trading details
+    long_acc = 1
+    short_acc = 2
     if trade:
         acc1_active = bool(os.getenv("DELTA_API_KEY_1") or os.getenv("DELTA_API_KEY"))
         acc2_active = bool(os.getenv("DELTA_API_KEY_2"))
+        acc3_active = bool(os.getenv("DELTA_API_KEY_3"))
+        
+        if acc3_active:
+            long_acc = 3
+            short_acc = 3
+            
         print(BOLD + YELLOW + "\n=== Automated Trading Mode Active ===" + RESET)
-        if acc1_active and acc2_active:
+        if acc3_active:
+            print(f"  Account 3 (Both LONG/SHORT) is connected.")
+            print(f"  All trades (Long and Short) will route to Account 3.")
+        elif acc1_active and acc2_active:
             print(f"  Account 1 (Main/LONG) and Account 2 (Sub/SHORT) are both connected.")
             print(f"  Long trades will route to Account 1; Short trades will route to Account 2.")
         elif acc1_active:
@@ -1886,12 +1932,15 @@ def run_live_monitor(symbols, resolution, poll_interval=15, trade=False, trade_s
                                     td['stop_loss'] = cl_closed - (curr_atr * 2)
                                     td['pyramid_count'] = 0
                                     
-                                    close_res, close_err = close_position_if_any(symbol, account_idx=2)
+                                    close_res, close_err = close_position_if_any(symbol, account_idx=short_acc)
+                                    if close_err:
+                                        print(f"  {RED}[ERROR] Close short position failed: {close_err}{RESET}")
                                     
                                     # Fractional Kelly Sizing
-                                    balance = get_live_usdt_balance(account_idx=1)
+                                    balance = get_live_usdt_balance(account_idx=long_acc)
                                     sl_distance = curr_atr * 2
                                     dynamic_size = trade_size
+                                    actual_size = max(1, int(dynamic_size))
                                     if balance > 0 and sl_distance > 0:
                                         dynamic_size = (balance * 0.02) / sl_distance
                                         print(f"  {CYAN}Calculated Kelly Lot Size: {dynamic_size:.3f} (Bal: ${balance:.2f}, Risk: 2%, SL: ${sl_distance:.2f}){RESET}")
@@ -1901,7 +1950,11 @@ def run_live_monitor(symbols, resolution, poll_interval=15, trade=False, trade_s
                                         if pct_risk > 0.05:
                                             print(f"  {RED}[WARNING: Burner Phase / Over-Leveraged] Due to low balance, this trade will risk {pct_risk*100.0:.1f}% of equity instead of 2.0% Kelly limits!{RESET}")
                                     
-                                    order_res, order_err = place_market_order(symbol, "buy", size=dynamic_size, account_idx=1)
+                                    order_res, order_err = place_market_order(symbol, "buy", size=actual_size, account_idx=long_acc)
+                                    if order_err:
+                                        print(f"  {RED}[ERROR] Order placement failed: {order_err}{RESET}")
+                                    else:
+                                        print(f"  {GREEN}[SUCCESS] LONG order placed successfully.{RESET}")
                                 elif new_state == "SHORT":
                                     print(f"\n{RED}[Trade Action] SHORT crossover triggered for {symbol}.{RESET}")
                                     td['entry_price'] = cl_closed
@@ -1910,12 +1963,15 @@ def run_live_monitor(symbols, resolution, poll_interval=15, trade=False, trade_s
                                     td['stop_loss'] = cl_closed + (curr_atr * 2)
                                     td['pyramid_count'] = 0
                                     
-                                    close_res, close_err = close_position_if_any(symbol, account_idx=1)
+                                    close_res, close_err = close_position_if_any(symbol, account_idx=long_acc)
+                                    if close_err:
+                                        print(f"  {RED}[ERROR] Close long position failed: {close_err}{RESET}")
                                     
                                     # Fractional Kelly Sizing
-                                    balance = get_live_usdt_balance(account_idx=2)
+                                    balance = get_live_usdt_balance(account_idx=short_acc)
                                     sl_distance = curr_atr * 2
                                     dynamic_size = trade_size
+                                    actual_size = max(1, int(dynamic_size))
                                     if balance > 0 and sl_distance > 0:
                                         dynamic_size = (balance * 0.02) / sl_distance
                                         print(f"  {CYAN}Calculated Kelly Lot Size: {dynamic_size:.3f} (Bal: ${balance:.2f}, Risk: 2%, SL: ${sl_distance:.2f}){RESET}")
@@ -1925,7 +1981,11 @@ def run_live_monitor(symbols, resolution, poll_interval=15, trade=False, trade_s
                                         if pct_risk > 0.05:
                                             print(f"  {RED}[WARNING: Burner Phase / Over-Leveraged] Due to low balance, this trade will risk {pct_risk*100.0:.1f}% of equity instead of 2.0% Kelly limits!{RESET}")
                                         
-                                    order_res, order_err = place_market_order(symbol, "sell", size=dynamic_size, account_idx=2)
+                                    order_res, order_err = place_market_order(symbol, "sell", size=actual_size, account_idx=short_acc)
+                                    if order_err:
+                                        print(f"  {RED}[ERROR] Order placement failed: {order_err}{RESET}")
+                                    else:
+                                        print(f"  {GREEN}[SUCCESS] SHORT order placed successfully.{RESET}")
                         
                         last_evaluated_candle_time[symbol] = closed_candle_time
                 
@@ -1941,19 +2001,24 @@ def run_live_monitor(symbols, resolution, poll_interval=15, trade=False, trade_s
                     if latest_close <= td['stop_loss'] and td['entry_price'] > 0:
                         print(f"\n{YELLOW}[Trailing Stop] {symbol} hit Long trailing stop at {latest_close:.4f}{RESET}")
                         if trade:
-                            close_position_if_any(symbol, account_idx=1)
+                            close_res, close_err = close_position_if_any(symbol, account_idx=long_acc)
+                            if close_err:
+                                print(f"  {RED}[ERROR] Close trailing stop failed: {close_err}{RESET}")
                         states[symbol] = "FLAT"
                         td['entry_price'] = 0
                         
                     elif td['entry_price'] > 0 and latest_close >= td['avg_price'] + (curr_atr * 1.5) and td['pyramid_count'] < 3:
                         print(f"\n{GREEN}[Pyramid] {symbol} Long moved +1.5 ATR. Scaling in (Layer {td['pyramid_count']+1})!{RESET}")
                         if trade:
-                            balance = get_live_usdt_balance(account_idx=1)
+                            balance = get_live_usdt_balance(account_idx=long_acc)
                             sl_distance = curr_atr * 2
                             dynamic_size = trade_size
                             if balance > 0 and sl_distance > 0:
                                 dynamic_size = (balance * 0.01) / sl_distance # Half-Kelly for Pyramids
-                            place_market_order(symbol, "buy", size=dynamic_size, account_idx=1)
+                            actual_size = max(1, int(dynamic_size))
+                            order_res, order_err = place_market_order(symbol, "buy", size=actual_size, account_idx=long_acc)
+                            if order_err:
+                                print(f"  {RED}[ERROR] Pyramid order failed: {order_err}{RESET}")
                         td['avg_price'] = (td['avg_price'] + latest_close) / 2
                         td['pyramid_count'] += 1
 
@@ -1967,19 +2032,24 @@ def run_live_monitor(symbols, resolution, poll_interval=15, trade=False, trade_s
                     if latest_close >= td['stop_loss'] and td['entry_price'] > 0:
                         print(f"\n{YELLOW}[Trailing Stop] {symbol} hit Short trailing stop at {latest_close:.4f}{RESET}")
                         if trade:
-                            close_position_if_any(symbol, account_idx=2)
+                            close_res, close_err = close_position_if_any(symbol, account_idx=short_acc)
+                            if close_err:
+                                print(f"  {RED}[ERROR] Close trailing stop failed: {close_err}{RESET}")
                         states[symbol] = "FLAT"
                         td['entry_price'] = 0
                         
                     elif td['entry_price'] > 0 and latest_close <= td['avg_price'] - (curr_atr * 1.5) and td['pyramid_count'] < 3:
                         print(f"\n{RED}[Pyramid] {symbol} Short moved +1.5 ATR. Scaling in (Layer {td['pyramid_count']+1})!{RESET}")
                         if trade:
-                            balance = get_live_usdt_balance(account_idx=2)
+                            balance = get_live_usdt_balance(account_idx=short_acc)
                             sl_distance = curr_atr * 2
                             dynamic_size = trade_size
                             if balance > 0 and sl_distance > 0:
                                 dynamic_size = (balance * 0.01) / sl_distance # Half-Kelly for Pyramids
-                            place_market_order(symbol, "sell", size=dynamic_size, account_idx=2)
+                            actual_size = max(1, int(dynamic_size))
+                            order_res, order_err = place_market_order(symbol, "sell", size=actual_size, account_idx=short_acc)
+                            if order_err:
+                                print(f"  {RED}[ERROR] Pyramid order failed: {order_err}{RESET}")
                         td['avg_price'] = (td['avg_price'] + latest_close) / 2
                         td['pyramid_count'] += 1
                 # ------------------------------------------------------
@@ -2022,17 +2092,38 @@ def interactive_mode():
     
     while True:
         clear_screen()
-        api_key = os.getenv("DELTA_API_KEY")
-        api_secret = os.getenv("DELTA_API_SECRET")
-        
-        status_label = "Connected" if api_key else "Disconnected"
-        color_status = f"{GREEN}Connected{RESET}" if api_key else f"{RED}Disconnected{RESET}"
+        menu_acc_idx = None
+        if os.getenv("DELTA_API_KEY_3"):
+            menu_acc_idx = 3
+        elif os.getenv("DELTA_API_KEY_1") or os.getenv("DELTA_API_KEY"):
+            menu_acc_idx = 1
+        elif os.getenv("DELTA_API_KEY_2"):
+            menu_acc_idx = 2
+            
+        api_key = None
+        api_secret = None
+        acc_name = ""
+        if menu_acc_idx == 3:
+            api_key = os.getenv("DELTA_API_KEY_3")
+            api_secret = os.getenv("DELTA_API_SECRET_3")
+            acc_name = "Account 3"
+        elif menu_acc_idx == 2:
+            api_key = os.getenv("DELTA_API_KEY_2")
+            api_secret = os.getenv("DELTA_API_SECRET_2")
+            acc_name = "Account 2"
+        elif menu_acc_idx == 1:
+            api_key = os.getenv("DELTA_API_KEY_1") or os.getenv("DELTA_API_KEY")
+            api_secret = os.getenv("DELTA_API_SECRET_1") or os.getenv("DELTA_API_SECRET")
+            acc_name = "Account 1"
+            
+        status_label = f"Connected ({acc_name})" if menu_acc_idx else "Disconnected"
+        color_status = f"{GREEN}Connected ({acc_name}){RESET}" if menu_acc_idx else f"{RED}Disconnected{RESET}"
         
         # Load user balance once or update every 15s to keep CMD responsive without rate limit exhaustion
         if api_key and api_secret:
             now = time.time()
             if cached_balance is None or now - cached_balance_time > 15:
-                balances, err = make_authenticated_request("GET", "/v2/wallet/balances")
+                balances, err = make_authenticated_request("GET", "/v2/wallet/balances", account_idx=menu_acc_idx)
                 if not err and balances:
                     found = False
                     for bal in balances:
@@ -2171,7 +2262,7 @@ def interactive_mode():
             # Ask if they want to enable automated trade routing
             trade_mode = False
             trade_size = 1
-            api_active = bool(os.getenv("DELTA_API_KEY_1") or os.getenv("DELTA_API_KEY"))
+            api_active = bool(os.getenv("DELTA_API_KEY_1") or os.getenv("DELTA_API_KEY") or os.getenv("DELTA_API_KEY_3"))
             if api_active:
                 trade_choice = input(BOLD + "Enable Automated Crossover Trading? (y/N): " + RESET).strip().lower()
                 if trade_choice == 'y':
@@ -2188,25 +2279,30 @@ def interactive_mode():
                 clear_screen()
                 api_key_1 = os.getenv("DELTA_API_KEY_1") or os.getenv("DELTA_API_KEY")
                 api_key_2 = os.getenv("DELTA_API_KEY_2")
+                api_key_3 = os.getenv("DELTA_API_KEY_3")
                 
                 status_1 = f"{GREEN}Connected{RESET}" if api_key_1 else f"{RED}Disconnected{RESET}"
                 status_2 = f"{GREEN}Connected{RESET}" if api_key_2 else f"{RED}Disconnected{RESET}"
+                status_3 = f"{GREEN}Connected{RESET}" if api_key_3 else f"{RED}Disconnected{RESET}"
                 
                 print(BOLD + CYAN + "┌" + "─"*50 + "┐" + RESET)
                 print(BOLD + CYAN + "│" + f" DELTA MULTI-ACCOUNT SETTINGS ".center(50) + "│" + RESET)
                 print(BOLD + CYAN + "├" + "─"*50 + "┤" + RESET)
-                print(f"  Account 1 (Main/LONG): {status_1}")
-                print(f"  Account 2 (Sub/SHORT): {status_2}")
+                print(f"  Account 1 (Main/LONG):       {status_1}")
+                print(f"  Account 2 (Sub/SHORT):       {status_2}")
+                print(f"  Account 3 (Both LONG/SHORT): {status_3}")
                 print(BOLD + CYAN + "├" + "─"*50 + "┤" + RESET)
                 print(BOLD + CYAN + "│" + f"  1. Connect / Update Account 1 (Main/LONG)".ljust(48) + "│" + RESET)
                 print(BOLD + CYAN + "│" + f"  2. Disconnect Account 1".ljust(48) + "│" + RESET)
                 print(BOLD + CYAN + "│" + f"  3. Connect / Update Account 2 (Sub/SHORT)".ljust(48) + "│" + RESET)
                 print(BOLD + CYAN + "│" + f"  4. Disconnect Account 2".ljust(48) + "│" + RESET)
-                print(BOLD + CYAN + "│" + f"  5. View Portfolio Balances & Positions".ljust(48) + "│" + RESET)
+                print(BOLD + CYAN + "│" + f"  5. Connect / Update Account 3 (Both LONG/SHORT)".ljust(48) + "│" + RESET)
+                print(BOLD + CYAN + "│" + f"  6. Disconnect Account 3".ljust(48) + "│" + RESET)
+                print(BOLD + CYAN + "│" + f"  7. View Portfolio Balances & Positions".ljust(48) + "│" + RESET)
                 print(BOLD + CYAN + "│" + f"  B. Back to Main Menu".ljust(48) + "│" + RESET)
                 print(BOLD + CYAN + "└" + "─"*50 + "┘" + RESET)
                 
-                sub_opt = input(BOLD + "\nSelect choice (1-5, B): " + RESET).strip().upper()
+                sub_opt = input(BOLD + "\nSelect choice (1-7, B): " + RESET).strip().upper()
                 if sub_opt == '1':
                     key_input = input("Enter API Key for Account 1: ").strip()
                     secret_input = input("Enter API Secret for Account 1: ").strip()
@@ -2242,6 +2338,21 @@ def interactive_mode():
                     print(f"\n{YELLOW}Account 2 disconnected.{RESET}")
                     time.sleep(2)
                 elif sub_opt == '5':
+                    key_input = input("Enter API Key for Account 3: ").strip()
+                    secret_input = input("Enter API Secret for Account 3: ").strip()
+                    if key_input and secret_input:
+                        save_env_keys(3, key_input, secret_input)
+                        load_env()
+                        print(f"\n{GREEN}Account 3 credentials saved successfully!{RESET}")
+                    else:
+                        print(f"\n{RED}Error: Fields cannot be empty.{RESET}")
+                    time.sleep(2)
+                elif sub_opt == '6':
+                    remove_env_keys(3)
+                    load_env()
+                    print(f"\n{YELLOW}Account 3 disconnected.{RESET}")
+                    time.sleep(2)
+                elif sub_opt == '7':
                     fetch_and_show_account()
                     input(BOLD + "\nPress Enter to return... " + RESET)
                 elif sub_opt == 'B':
@@ -2366,7 +2477,7 @@ def interactive_mode():
                         daemon_args += ["--symbol", symbols[0]]
                     daemon_args += ["--resolution", resolution, "--monitor", "--poll-interval", str(poll_interval)]
                     
-                    api_active = bool(os.getenv("DELTA_API_KEY_1") or os.getenv("DELTA_API_KEY"))
+                    api_active = bool(os.getenv("DELTA_API_KEY_1") or os.getenv("DELTA_API_KEY") or os.getenv("DELTA_API_KEY_3"))
                     if api_active:
                         print(f"\n{YELLOW}[Help: Type 'y' to allow the bot to place real trades using your account keys.]{RESET}")
                         trade_choice = input(BOLD + "Enable Crossover Trading? (y/N): " + RESET).strip().lower()
@@ -2523,7 +2634,7 @@ def main():
         os._exit(0)
 
     # 2. Strategy Optimization
-    if args.optimize:
+    if args.optimize or args.meta_optimize:
         if not args.symbol or args.symbol.upper() == 'ALL':
             print(f"{RED}Error: You must specify a single specific symbol (e.g. -s SOLUSD) to run optimization.{RESET}")
             sys.exit(1)
