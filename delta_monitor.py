@@ -74,7 +74,9 @@ SUPPORTED_RESOLUTIONS = {
 
 def clear_screen():
     """Clear terminal screen."""
-    os.system('cls' if os.name == 'nt' else 'clear')
+    if sys.stdout and hasattr(sys.stdout, 'isatty') and sys.stdout.isatty():
+        os.system('cls' if os.name == 'nt' else 'clear')
+
 
 def load_env():
     """Loads environment variables from .env file in the same directory."""
@@ -145,7 +147,7 @@ def start_daemon(args_list):
         
     creationflags = 0
     if os.name == 'nt':
-        creationflags = 0x08000000  # CREATE_NO_WINDOW
+        creationflags = 0x08000000 | 0x00000008  # CREATE_NO_WINDOW | DETACHED_PROCESS
         
     p = subprocess.Popen(
         cmd,
@@ -267,60 +269,133 @@ def save_optimized_settings(symbol, resolution, fast_period, slow_period):
 
 def backtest_ema_crossover(candles, fast_period, slow_period):
     """
-    Simulates stop-and-reverse trading on candles using fast and slow EMA crossover.
-    Returns: (net_profit_pct, max_drawdown_pct, trades_count)
+    Simulates Advanced Trend Following with:
+    1. MTF Trend Filtering (Macro EMA)
+    2. Fractional Kelly / Compounding Sizing
+    3. Pyramiding (Scale-in on ATR moves)
+    4. ATR Trailing Stops
     """
-    if len(candles) < slow_period + 5:
-        return 0.0, 100.0, 0
+    if len(candles) < (slow_period * 4) + 5:
+        return 0.0, 100.0, 0, 0.0, 0.0
         
     closes = [c['close'] for c in candles]
     fast_ema = calculate_ema(closes, fast_period)
     slow_ema = calculate_ema(closes, slow_period)
+    macro_ema = calculate_ema(closes, slow_period * 4)  # MTF Filter
+    atr = calculate_atr(candles, 14)
     
-    if len(fast_ema) < len(closes) or fast_ema[-1] is None or slow_ema[-1] is None:
-        return 0.0, 100.0, 0
+    if len(fast_ema) < len(closes) or fast_ema[-1] is None or macro_ema[-1] is None:
+        return 0.0, 100.0, 0, 0.0, 0.0
         
     initial_equity = 10000.0
     equity = initial_equity
     equity_curve = [equity]
     
-    start_idx = slow_period
+    start_idx = slow_period * 4
     position = 0 # 0 = flat, 1 = long, -1 = short
     trades_count = 0
+    trade_returns = []
     
-    if fast_ema[start_idx] > slow_ema[start_idx]:
-        position = 1
-    else:
-        position = -1
-        
-    for i in range(start_idx + 1, len(closes)):
-        prev_close = closes[i-1]
+    # State tracking
+    entry_price = 0.0
+    stop_loss = 0.0
+    highest_price = 0.0
+    lowest_price = 0.0
+    pyramid_count = 0
+    avg_price = 0.0
+    
+    # Fractional Kelly Approximation (Fixed compounding risk)
+    base_risk = 0.02 # 2% per trade, compounds with equity
+    position_size_dollars = 0.0
+    
+    for i in range(start_idx, len(closes)):
         curr_close = closes[i]
+        prev_close = closes[i-1]
         
-        if position == 1:
-            bar_return = (curr_close - prev_close) / prev_close
-        else:
-            bar_return = (prev_close - curr_close) / prev_close
-            
-        equity = equity * (1.0 + bar_return)
-        equity_curve.append(equity)
-        
-        prev_fast = fast_ema[i-1]
-        prev_slow = slow_ema[i-1]
         curr_fast = fast_ema[i]
         curr_slow = slow_ema[i]
+        curr_macro = macro_ema[i]
+        curr_atr = atr[i]
         
-        if prev_fast is None or prev_slow is None or curr_fast is None or curr_slow is None:
+        if curr_fast is None or curr_macro is None or curr_atr == 0:
             continue
             
-        if position == -1 and curr_fast > curr_slow:
-            position = 1
-            trades_count += 1
-        elif position == 1 and curr_fast < curr_slow:
-            position = -1
-            trades_count += 1
+        # 1. Update Equity & Trailing Stops if in a position
+        if position == 1:
+            # Mark to market equity update
+            bar_return = (curr_close - prev_close) / prev_close
+            equity += position_size_dollars * bar_return
             
-    # Calculate Max Drawdown
+            # Trailing stop update
+            if curr_close > highest_price:
+                highest_price = curr_close
+                new_stop = highest_price - (curr_atr * 2)
+                if new_stop > stop_loss:
+                    stop_loss = new_stop
+                    
+            # Pyramiding (Scale In)
+            if curr_close > avg_price + (curr_atr * 1.5) and pyramid_count < 3:
+                pyramid_count += 1
+                add_size = equity * (base_risk / 2) # Add half-size
+                position_size_dollars += add_size
+                avg_price = (avg_price + curr_close) / 2 # simplified avg price
+                
+            # Exit Conditions (Stop Loss or Trend Reversal)
+            if curr_close <= stop_loss or curr_fast < curr_slow:
+                trade_return = (curr_close - entry_price) / entry_price
+                trade_returns.append(trade_return)
+                position = 0
+                trades_count += 1
+                
+        elif position == -1:
+            bar_return = (prev_close - curr_close) / prev_close
+            equity += position_size_dollars * bar_return
+            
+            if curr_close < lowest_price:
+                lowest_price = curr_close
+                new_stop = lowest_price + (curr_atr * 2)
+                if new_stop < stop_loss:
+                    stop_loss = new_stop
+                    
+            if curr_close < avg_price - (curr_atr * 1.5) and pyramid_count < 3:
+                pyramid_count += 1
+                add_size = equity * (base_risk / 2)
+                position_size_dollars += add_size
+                avg_price = (avg_price + curr_close) / 2
+                
+            if curr_close >= stop_loss or curr_fast > curr_slow:
+                trade_return = (entry_price - curr_close) / entry_price
+                trade_returns.append(trade_return)
+                position = 0
+                trades_count += 1
+                
+        # 2. Entry Conditions (MTF Filtered)
+        if position == 0:
+            equity_curve.append(equity) # Only snapshot equity on flat to speed up calculation
+            
+            # LONG ENTRY
+            if curr_fast > curr_slow and curr_close > curr_macro:
+                position = 1
+                entry_price = curr_close
+                avg_price = curr_close
+                highest_price = curr_close
+                stop_loss = entry_price - (curr_atr * 2)
+                position_size_dollars = equity * base_risk * 10 # 10x leverage equivalent based on risk
+                pyramid_count = 0
+                
+            # SHORT ENTRY
+            elif curr_fast < curr_slow and curr_close < curr_macro:
+                position = -1
+                entry_price = curr_close
+                avg_price = curr_close
+                lowest_price = curr_close
+                stop_loss = entry_price + (curr_atr * 2)
+                position_size_dollars = equity * base_risk * 10
+                pyramid_count = 0
+                
+    net_profit_pct = ((equity - initial_equity) / initial_equity) * 100.0
+    
+    # Fast Drawdown Calculation
     peak = initial_equity
     max_dd = 0.0
     for eq in equity_curve:
@@ -330,96 +405,404 @@ def backtest_ema_crossover(candles, fast_period, slow_period):
         if dd > max_dd:
             max_dd = dd
             
-    net_profit_pct = ((equity - initial_equity) / initial_equity) * 100.0
-    return net_profit_pct, max_dd, trades_count
+    wins = [r for r in trade_returns if r > 0]
+    losses = [r for r in trade_returns if r <= 0]
+    win_rate = len(wins) / len(trade_returns) if trade_returns else 0.0
+    sum_wins = sum(wins)
+    sum_losses = abs(sum(losses))
+    profit_factor = sum_wins / sum_losses if sum_losses > 0 else (sum_wins if sum_wins > 0 else 1.0)
+    
+    return net_profit_pct, max_dd, trades_count, win_rate, profit_factor
 
-def run_genetic_optimization(symbol, resolution, generations=10):
+def get_backtest_candle_count(resolution):
+    """Dynamically scale historical candle count to prevent curve-fitting."""
+    res_lower = resolution.lower()
+    if '1m' in res_lower or '5m' in res_lower:
+        return 10000
+    elif '15m' in res_lower or '30m' in res_lower:
+        return 5000
+    elif '1h' in res_lower:
+        return 3000
+    elif '4h' in res_lower:
+        return 2000
+    elif '1d' in res_lower:
+        return 500
+    elif '1w' in res_lower:
+        return 150
+    else:
+        return 2000
+
+def get_ema_ranges(resolution):
+    """
+    Returns optimal (Fast range, Slow range) search tuples for GA optimization.
+    Slow range requires a minimum period distance from Fast EMA.
+    """
+    res_lower = resolution.lower()
+    if '1m' in res_lower or '5m' in res_lower or '15m' in res_lower:
+        # Scalping timeframes: slow EMAs filter high-frequency noise
+        return (10, 50), (50, 200)
+    elif '30m' in res_lower or '1h' in res_lower or '4h' in res_lower:
+        # Balanced trend following
+        return (8, 30), (30, 120)
+    else:
+        # Daily macro charts: faster response needed because candles are large
+        return (5, 15), (15, 60)
+
+def run_genetic_optimization(symbol, resolution, generations=15, pop_size=50, elites_count=5, mutation_rate=0.25):
     """
     Runs a Genetic Algorithm on historical candle data to find optimal EMA crossover parameters.
     """
     print(BOLD + CYAN + f"\n=== Starting Genetic Strategy Optimization for {symbol} ({resolution}) ===" + RESET)
     
-    print("Fetching historical candles for backtesting...")
-    candles, err = fetch_candle_data(symbol, resolution, 250)
+    count = get_backtest_candle_count(resolution)
+    print(f"Fetching historical candles for backtesting (Count: {count})...")
+    candles, err = fetch_candle_data(symbol, resolution, count)
     if err or not candles or len(candles) < 40:
         print(f"{RED}Error fetching enough historical data: {err or 'insufficient candles'}{RESET}")
         return
         
     print(f"Loaded {len(candles)} historical candles.")
+    run_genetic_optimization_with_params(symbol, resolution, candles, generations, pop_size, elites_count, mutation_rate)
+
+def run_genetic_optimization_inner(candles, resolution, generations, pop_size, elites_count, mutation_rate):
+    """
+    Inner GA worker function that backtests strategies without API calls.
+    Now implements Out-of-Sample (OOS) 70/30 Holdout Validation.
+    """
+    split_idx = int(len(candles) * 0.7)
+    train_candles = candles[:split_idx]
+    test_candles = candles[split_idx:]
     
-    # Genetic Algorithm Parameters
-    pop_size = 30
-    elites_count = 5
+    fast_range, slow_range = get_ema_ranges(resolution)
     
     population = []
     while len(population) < pop_size:
-        fast = random.randint(5, 40)
-        slow = random.randint(fast + 10, 120)
+        fast = random.randint(fast_range[0], fast_range[1])
+        slow = random.randint(max(slow_range[0], fast + 10), slow_range[1])
         population.append((fast, slow))
         
-    print("Evolving populations over generations...")
+    best_global_fit = -9999.0
+    stagnant_gens = 0
+    tourn_size = max(3, pop_size // 10)
+    
+    # --- In-Sample Evolution (Training) ---
     for gen in range(1, generations + 1):
         scored_pop = []
         for fast, slow in population:
-            profit, max_dd, trades = backtest_ema_crossover(candles, fast, slow)
-            fitness = profit - (max_dd * 0.75)
-            if trades < 3:
-                fitness -= 100.0
+            profit, max_dd, trades, win_rate, profit_factor = backtest_ema_crossover(train_candles, fast, slow)
+            # Sharpe-like expectancy fitness formula
+            fitness = profit * (1.0 + win_rate) * min(3.0, profit_factor) - (max_dd * 0.75)
+            if trades < 10: # Lowered to 10 because it's only 70% of the data
+                fitness -= 200.0
             scored_pop.append((fitness, (fast, slow), profit, max_dd, trades))
             
         scored_pop.sort(key=lambda x: x[0], reverse=True)
+        best_fit = scored_pop[0][0]
         
-        best_fit, best_pair, best_p, best_dd, best_tr = scored_pop[0]
-        print(f"  Gen {gen:2d}/{generations:2d} | Best EMA: Fast {best_pair[0]:2d}/Slow {best_pair[1]:3d} | "
-              f"Est. Return: {best_p:+.2f}% | Max DD: {best_dd:.2f}% | Trades: {best_tr}")
-              
+        if best_fit > best_global_fit + 0.01:
+            best_global_fit = best_fit
+            stagnant_gens = 0
+        else:
+            stagnant_gens += 1
+            if stagnant_gens >= 5 and gen > generations // 2:
+                break
+        
+        # Next generation
         next_pop = [pair for fit, pair, p, dd, tr in scored_pop[:elites_count]]
+        current_mut_rate = mutation_rate * (1.0 - (gen / generations) * 0.5)
         
         while len(next_pop) < pop_size:
             parents = []
             for _ in range(2):
-                candidates = random.sample(scored_pop, 3)
+                candidates = random.sample(scored_pop, tourn_size)
                 candidates.sort(key=lambda x: x[0], reverse=True)
                 parents.append(candidates[0][1])
                 
             p1, p2 = parents[0], parents[1]
             
-            child_fast = random.choice([p1[0], p2[0]])
-            child_slow = random.choice([p1[1], p2[1]])
+            # Blend Crossover
+            child_fast = int((p1[0] + p2[0]) / 2) + random.choice([-1, 0, 1])
+            child_slow = int((p1[1] + p2[1]) / 2) + random.choice([-2, 0, 2])
             
             if child_slow < child_fast + 10:
                 child_slow = child_fast + 10
                 
-            if random.random() < 0.25:
+            if random.random() < current_mut_rate:
                 child_fast += random.choice([-2, -1, 1, 2])
-                child_fast = max(5, min(40, child_fast))
                 
-            if random.random() < 0.25:
+            if random.random() < current_mut_rate:
                 child_slow += random.choice([-5, -2, 2, 5])
-                child_slow = max(child_fast + 10, min(140, child_slow))
                 
+            child_fast = max(fast_range[0], min(fast_range[1], child_fast))
+            child_slow = max(max(slow_range[0], child_fast + 10), min(slow_range[1], child_slow))
             next_pop.append((child_fast, child_slow))
             
         population = next_pop
         
+    # --- Out-of-Sample Validation (Testing) ---
     final_scored = []
     for fast, slow in population:
-        profit, max_dd, trades = backtest_ema_crossover(candles, fast, slow)
-        fitness = profit - (max_dd * 0.75)
-        if trades < 3:
-            fitness -= 100.0
-        final_scored.append((fitness, (fast, slow), profit, max_dd, trades))
+        tr_p, tr_dd, tr_tr, tr_wr, tr_pf = backtest_ema_crossover(train_candles, fast, slow)
+        train_fitness = tr_p * (1.0 + tr_wr) * min(3.0, tr_pf) - (tr_dd * 0.75)
+        if tr_tr < 10:
+            train_fitness -= 200.0
+            
+        te_p, te_dd, te_tr, te_wr, te_pf = backtest_ema_crossover(test_candles, fast, slow)
+        test_fitness = te_p * (1.0 + te_wr) * min(3.0, te_pf) - (te_dd * 0.75)
+        
+        # Penalize if OOS performance crashes (curve-fitting detection)
+        if te_p <= 0 or test_fitness < (train_fitness * 0.2):
+            final_fit = train_fitness - 1000.0 
+        else:
+            final_fit = (train_fitness * 0.6) + (test_fitness * 0.4)
+            
+        final_scored.append((final_fit, (fast, slow), tr_p, tr_dd, tr_tr, te_p, te_dd, te_tr))
         
     final_scored.sort(key=lambda x: x[0], reverse=True)
-    best_fitness, (best_fast, best_slow), profit, max_dd, trades = final_scored[0]
+    best_fitness, (best_fast, best_slow), tr_p, tr_dd, tr_tr, te_p, te_dd, te_tr = final_scored[0]
+    
+    # Return blended metrics for the overall fitness perspective
+    blended_profit = (tr_p * 0.7) + (te_p * 0.3)
+    blended_dd = max(tr_dd, te_dd)
+    blended_trades = tr_tr + te_tr
+    return best_fast, best_slow, blended_profit, blended_dd, blended_trades
+
+def run_genetic_optimization_with_params(symbol, resolution, candles, generations, pop_size, elites_count, mutation_rate):
+    """
+    Runs final strategy optimization with custom parameters and saves settings.
+    Now uses 70/30 Out-of-Sample Holdout testing to prove edge.
+    """
+    split_idx = int(len(candles) * 0.7)
+    train_candles = candles[:split_idx]
+    test_candles = candles[split_idx:]
+
+    fast_range, slow_range = get_ema_ranges(resolution)
+
+    population = []
+    while len(population) < pop_size:
+        fast = random.randint(fast_range[0], fast_range[1])
+        slow = random.randint(max(slow_range[0], fast + 10), slow_range[1])
+        population.append((fast, slow))
+        
+    best_global_fit = -9999.0
+    stagnant_gens = 0
+    tourn_size = max(3, pop_size // 10)
+    
+    print(f"Evolving populations over {generations} generations (Training on {len(train_candles)} candles)...")
+    for gen in range(1, generations + 1):
+        scored_pop = []
+        for fast, slow in population:
+            profit, max_dd, trades, win_rate, profit_factor = backtest_ema_crossover(train_candles, fast, slow)
+            fitness = profit * (1.0 + win_rate) * min(3.0, profit_factor) - (max_dd * 0.75)
+            if trades < 10:
+                fitness -= 200.0
+            scored_pop.append((fitness, (fast, slow), profit, max_dd, trades))
+            
+        scored_pop.sort(key=lambda x: x[0], reverse=True)
+        best_fit, best_pair, best_p, best_dd, best_tr = scored_pop[0]
+        
+        print(f"  Gen {gen:2d}/{generations:2d} | Best EMA: Fast {best_pair[0]:2d}/Slow {best_pair[1]:3d} | "
+              f"Train Return: {best_p:+.2f}% | Max DD: {best_dd:.2f}% | Trades: {best_tr}")
+              
+        if best_fit > best_global_fit + 0.01:
+            best_global_fit = best_fit
+            stagnant_gens = 0
+        else:
+            stagnant_gens += 1
+            if stagnant_gens >= 5 and gen > generations // 2:
+                print(f"  {YELLOW}Early stopping triggered (No improvement for 5 generations){RESET}")
+                break
+              
+        next_pop = [pair for fit, pair, p, dd, tr in scored_pop[:elites_count]]
+        current_mut_rate = mutation_rate * (1.0 - (gen / generations) * 0.5)
+        
+        while len(next_pop) < pop_size:
+            parents = []
+            for _ in range(2):
+                candidates = random.sample(scored_pop, tourn_size)
+                candidates.sort(key=lambda x: x[0], reverse=True)
+                parents.append(candidates[0][1])
+                
+            p1, p2 = parents[0], parents[1]
+            
+            child_fast = int((p1[0] + p2[0]) / 2) + random.choice([-1, 0, 1])
+            child_slow = int((p1[1] + p2[1]) / 2) + random.choice([-2, 0, 2])
+            
+            if child_slow < child_fast + 10:
+                child_slow = child_fast + 10
+                
+            if random.random() < current_mut_rate:
+                child_fast += random.choice([-2, -1, 1, 2])
+                
+            if random.random() < current_mut_rate:
+                child_slow += random.choice([-5, -2, 2, 5])
+                
+            child_fast = max(fast_range[0], min(fast_range[1], child_fast))
+            child_slow = max(max(slow_range[0], child_fast + 10), min(slow_range[1], child_slow))
+            next_pop.append((child_fast, child_slow))
+            
+        population = next_pop
+        
+    print(BOLD + CYAN + f"\nRunning Out-of-Sample (OOS) Validation on {len(test_candles)} unseen candles..." + RESET)
+    final_scored = []
+    for fast, slow in population:
+        tr_p, tr_dd, tr_tr, tr_wr, tr_pf = backtest_ema_crossover(train_candles, fast, slow)
+        train_fitness = tr_p * (1.0 + tr_wr) * min(3.0, tr_pf) - (tr_dd * 0.75)
+        if tr_tr < 10:
+            train_fitness -= 200.0
+            
+        te_p, te_dd, te_tr, te_wr, te_pf = backtest_ema_crossover(test_candles, fast, slow)
+        test_fitness = te_p * (1.0 + te_wr) * min(3.0, te_pf) - (te_dd * 0.75)
+        
+        if te_p <= 0 or test_fitness < (train_fitness * 0.2):
+            final_fit = train_fitness - 1000.0
+        else:
+            final_fit = (train_fitness * 0.6) + (test_fitness * 0.4)
+            
+        final_scored.append((final_fit, (fast, slow), tr_p, tr_dd, tr_tr, te_p, te_dd, te_tr))
+        
+    final_scored.sort(key=lambda x: x[0], reverse=True)
+    best_fitness, (best_fast, best_slow), tr_p, tr_dd, tr_tr, te_p, te_dd, te_tr = final_scored[0]
     
     print(BOLD + GREEN + f"\nOptimization Complete!" + RESET)
     print(f"Optimal EMA Strategy: Fast {best_fast} / Slow {best_slow}")
-    print(f"Historical Net Return: {profit:+.2f}%")
-    print(f"Historical Max Drawdown: {max_dd:.2f}%")
-    print(f"Number of Crossover Trades: {trades}")
+    print(f"Training (In-Sample) Return:   {tr_p:+.2f}% | Max DD: {tr_dd:.2f}% | Trades: {tr_tr}")
     
+    if te_p > 0:
+        print(f"Testing (Out-of-Sample) Return: {BOLD}{GREEN}{te_p:+.2f}%{RESET} | Max DD: {te_dd:.2f}% | Trades: {te_tr}")
+    else:
+        print(f"Testing (Out-of-Sample) Return: {BOLD}{RED}{te_p:+.2f}% (FAILED OOS){RESET} | Max DD: {te_dd:.2f}% | Trades: {te_tr}")
+        
     save_optimized_settings(symbol, resolution, best_fast, best_slow)
+
+def run_meta_genetic_optimization(symbol, resolution, meta_generations=5, meta_pop_size=10):
+    """
+    Runs a Meta-Genetic Algorithm to optimize the hyperparameters of the strategy optimizer.
+    """
+    print(BOLD + MAGENTA + f"\n=== Starting META Genetic Algorithm Hyperparameter Tuning for {symbol} ({resolution}) ===" + RESET)
+    
+    count = get_backtest_candle_count(resolution)
+    print(f"Fetching historical candles for meta-optimization (Count: {count})...")
+    candles, err = fetch_candle_data(symbol, resolution, count)
+    if err or not candles or len(candles) < 40:
+        print(f"{RED}Error fetching enough historical data for meta-opt: {err or 'insufficient candles'}{RESET}")
+        return
+        
+    print(f"Loaded {len(candles)} historical candles. Initializing meta-population...")
+    
+    population = []
+    while len(population) < meta_pop_size:
+        pop_size = random.randint(15, 50)
+        elites = random.randint(2, min(8, pop_size - 5))
+        mut_rate = round(random.uniform(0.1, 0.4), 2)
+        gens = random.randint(5, 15)
+        population.append((pop_size, elites, mut_rate, gens))
+        
+    best_global_fit = -9999.0
+    stagnant_gens = 0
+    tourn_size = max(3, meta_pop_size // 4)
+    
+    print("Evolving GA hyperparameters...")
+    for gen in range(1, meta_generations + 1):
+        scored_pop = []
+        for pop_size, elites, mut_rate, gens in population:
+            runs_fitness = []
+            for _ in range(2):
+                best_fast, best_slow, profit, max_dd, trades = run_genetic_optimization_inner(
+                    candles, resolution, gens, pop_size, elites, mut_rate
+                )
+                # Compute strategy fitness using same advanced formula
+                _, _, _, win_rate, profit_factor = backtest_ema_crossover(candles, best_fast, best_slow)
+                fitness = profit * (1.0 + win_rate) * min(3.0, profit_factor) - (max_dd * 0.75)
+                if trades < 15:
+                    fitness -= 200.0
+                runs_fitness.append(fitness)
+            avg_fitness = sum(runs_fitness) / len(runs_fitness)
+            # Efficiency Penalty: penalize excessively large computational load
+            efficiency_penalty = (pop_size * gens) * 0.05
+            penalized_fitness = avg_fitness - efficiency_penalty
+            scored_pop.append((penalized_fitness, (pop_size, elites, mut_rate, gens), avg_fitness))
+            
+        scored_pop.sort(key=lambda x: x[0], reverse=True)
+        best_penalized_fit, best_params, best_real_fit = scored_pop[0]
+        
+        print(f"  Meta-Gen {gen:2d}/{meta_generations:2d} | Best GA Config: Pop {best_params[0]:2d}, Elites {best_params[1]:2d}, Mut {best_params[2]:.2f}, Gens {best_params[3]:2d} | Est. Avg Strategy Fitness: {best_real_fit:+.2f}")
+        
+        if best_penalized_fit > best_global_fit + 0.1:
+            best_global_fit = best_penalized_fit
+            stagnant_gens = 0
+        else:
+            stagnant_gens += 1
+            if stagnant_gens >= 3 and gen > meta_generations // 2:
+                print(f"  {YELLOW}Meta-GA Early stopping triggered (No improvement for 3 generations){RESET}")
+                break
+        
+        # Mating and breeding
+        elites_count = max(2, meta_pop_size // 4)
+        next_pop = [params for pfit, params, rfit in scored_pop[:elites_count]]
+        current_mut_rate = 0.25 * (1.0 - (gen / meta_generations) * 0.5)
+        
+        while len(next_pop) < meta_pop_size:
+            parents = random.sample(scored_pop[:max(3, tourn_size)], 2)
+            p1, p2 = parents[0][1], parents[1][1]
+            
+            # Blend Crossover
+            child_pop_size = int((p1[0] + p2[0]) / 2) + random.choice([-2, 0, 2])
+            child_elites = int((p1[1] + p2[1]) / 2) + random.choice([-1, 0, 1])
+            child_mut_rate = round((p1[2] + p2[2]) / 2 + random.choice([-0.05, 0.0, 0.05]), 2)
+            child_gens = int((p1[3] + p2[3]) / 2) + random.choice([-1, 0, 1])
+            
+            if child_elites >= child_pop_size:
+                child_elites = max(2, child_pop_size // 5)
+                
+            # Mutation
+            if random.random() < current_mut_rate:
+                child_pop_size = max(10, min(60, child_pop_size + random.choice([-5, -2, 2, 5])))
+            if random.random() < current_mut_rate:
+                child_elites = max(1, min(12, child_elites + random.choice([-1, 1])))
+            if random.random() < current_mut_rate:
+                child_mut_rate = max(0.05, min(0.5, round(child_mut_rate + random.choice([-0.05, 0.05]), 2)))
+            if random.random() < current_mut_rate:
+                child_gens = max(3, min(25, child_gens + random.choice([-2, -1, 1, 2])))
+                
+            if child_elites >= child_pop_size:
+                child_elites = max(1, child_pop_size // 5)
+                
+            next_pop.append((child_pop_size, child_elites, child_mut_rate, child_gens))
+            
+        population = next_pop
+        
+    final_scored = []
+    for pop_size, elites, mut_rate, gens in population:
+        runs_fitness = []
+        for _ in range(2):
+            best_fast, best_slow, profit, max_dd, trades = run_genetic_optimization_inner(
+                candles, resolution, gens, pop_size, elites, mut_rate
+            )
+            _, _, _, win_rate, profit_factor = backtest_ema_crossover(candles, best_fast, best_slow)
+            fitness = profit * (1.0 + win_rate) * min(3.0, profit_factor) - (max_dd * 0.75)
+            if trades < 15:
+                fitness -= 200.0
+            runs_fitness.append(fitness)
+        avg_fitness = sum(runs_fitness) / len(runs_fitness)
+        efficiency_penalty = (pop_size * gens) * 0.05
+        penalized_fitness = avg_fitness - efficiency_penalty
+        final_scored.append((penalized_fitness, (pop_size, elites, mut_rate, gens), avg_fitness))
+        
+    final_scored.sort(key=lambda x: x[0], reverse=True)
+    best_penalized_fit, (best_pop_size, best_elites, best_mut_rate, best_gens), best_avg_fit = final_scored[0]
+    
+    print(BOLD + GREEN + f"\nMeta-Optimization Complete!" + RESET)
+    print(f"Optimal GA Configuration:")
+    print(f"  Population Size: {best_pop_size}")
+    print(f"  Elites Count:    {best_elites}")
+    print(f"  Mutation Rate:   {best_mut_rate}")
+    print(f"  Generations:     {best_gens}")
+    print(f"  Expected Avg Strategy Fitness: {best_avg_fit:+.2f} (Penalized: {best_penalized_fit:+.2f})")
+    
+    print(BOLD + CYAN + f"\nRunning final strategy optimization using tuned hyperparameters..." + RESET)
+    run_genetic_optimization_with_params(symbol, resolution, candles, best_gens, best_pop_size, best_elites, best_mut_rate)
+
 
 def run_autopilot_setup(resolution='1h', generations=10):
     """
@@ -756,7 +1139,7 @@ def place_market_order(symbol, side, size, account_idx=1):
         
     payload = {
         "product_id": prod_id,
-        "size": int(size),
+        "size": max(1, int(size)),
         "side": side.lower(),
         "order_type": "market_order"
     }
@@ -805,94 +1188,145 @@ def resolution_to_seconds(res):
     except Exception:
         return 3600
 
+def parse_resolution_input(user_input, default_val='1d'):
+    """
+    Cleans and parses resolution input. Strips quotes and allows both
+    digit choices (e.g. '5') and direct codes (e.g. '1h').
+    """
+    cleaned = user_input.replace("'", "").replace('"', '').strip().lower()
+    sorted_resolutions = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w']
+    
+    for res in sorted_resolutions:
+        if cleaned == res.lower():
+            return res
+            
+    if cleaned.isdigit():
+        idx = int(cleaned) - 1
+        if 0 <= idx < len(sorted_resolutions):
+            return sorted_resolutions[idx]
+            
+    return default_val
+
+def get_validated_int_input(prompt, help_text, default_val, min_val, max_val):
+    """
+    Displays user-friendly help text, checks input limits,
+    and returns a validated integer with warnings on out-of-bounds inputs.
+    """
+    print(f"\n{YELLOW}[Help: {help_text}]{RESET}")
+    while True:
+        user_in = input(BOLD + prompt + RESET).strip()
+        if not user_in:
+            return default_val
+        try:
+            val = int(user_in)
+            if min_val <= val <= max_val:
+                return val
+            else:
+                print(f"{RED}[Warning: Input out of bounds! Must be between {min_val} and {max_val}.]{RESET}")
+        except ValueError:
+            print(f"{RED}[Warning: Invalid input! Please enter a whole number.]{RESET}")
+
 def fetch_candle_data(symbol, resolution, candle_count):
     """
     Fetches candle data from the Delta Exchange API.
     Uses a 2.5x time buffer to account for weekends and holidays in stock/commodity data.
+    If the request fails or returns empty (e.g. because start time is too far in the past),
+    it dynamically retries with smaller candle counts.
     """
-    # 2.5x buffer to make sure we get enough candles after filtering out non-trading periods
-    seconds_needed = int(candle_count * 2.5 * resolution_to_seconds(resolution))
-    end_time = int(time.time())
-    start_time = end_time - seconds_needed
+    attempts = [candle_count, candle_count // 2, candle_count // 4, 1000, 500, 200]
+    last_err = "No data"
+    
+    for count in attempts:
+        if count < 40:
+            continue
+            
+        seconds_needed = int(count * 2.5 * resolution_to_seconds(resolution))
+        end_time = int(time.time())
+        start_time = end_time - seconds_needed
 
-    params = {
-        'symbol': symbol,
-        'resolution': resolution,
-        'start': start_time,
-        'end': end_time
-    }
+        params = {
+            'symbol': symbol,
+            'resolution': resolution,
+            'start': start_time,
+            'end': end_time
+        }
 
-    query = urllib.parse.urlencode(params)
-    # Using Delta India API which lists the macro indices (SPX, Nasdaq, Gold, Silver)
-    url = f"https://api.india.delta.exchange/v2/history/candles?{query}"
+        query = urllib.parse.urlencode(params)
+        url = f"https://api.india.delta.exchange/v2/history/candles?{query}"
 
-    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-    try:
-        with urllib.request.urlopen(req, timeout=10) as response:
-            if response.status == 200:
-                data = json.loads(response.read().decode('utf-8'))
-                if data.get('success'):
-                    candles = data.get('result', [])
-                    # Sort chronologically (oldest to newest)
-                    candles.sort(key=lambda x: x['time'])
-                    # Take the most recent candle_count items
-                    return candles[-candle_count:], None
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as response:
+                if response.status == 200:
+                    data = json.loads(response.read().decode('utf-8'))
+                    if data.get('success'):
+                        candles = data.get('result', [])
+                        if candles:
+                            # Sort chronologically (oldest to newest)
+                            candles.sort(key=lambda x: x['time'])
+                            return candles[-count:], None
+                        else:
+                            last_err = "API returned success=true but empty list (probably requested too far in the past)"
+                    else:
+                        last_err = f"API returned success=false: {data.get('error', {}).get('message', 'Unknown error')}"
                 else:
-                    return [], "API returned success=false"
+                    last_err = f"HTTP error {response.status}"
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                reset_ms = e.headers.get('X-RATE-LIMIT-RESET')
+                if reset_ms:
+                    reset_sec = float(reset_ms) / 1000.0
+                    sleep_dur = min(300.0, reset_sec)
+                    print(f"\n{YELLOW}[Rate Limit] Exceeded (HTTP 429). Auto-sleeping for {sleep_dur:.2f}s before retrying...{RESET}")
+                    time.sleep(sleep_dur)
+                    try:
+                        with urllib.request.urlopen(req, timeout=10) as response:
+                            if response.status == 200:
+                                data = json.loads(response.read().decode('utf-8'))
+                                if data.get('success'):
+                                    candles = data.get('result', [])
+                                    if candles:
+                                        candles.sort(key=lambda x: x['time'])
+                                        return candles[-count:], None
+                    except Exception as retry_err:
+                        last_err = f"Failed on rate limit retry: {str(retry_err)}"
+                last_err = "API Rate Limit Exceeded (HTTP 429)."
             else:
-                return [], f"HTTP error {response.status}"
-    except urllib.error.HTTPError as e:
-        if e.code == 429:
-            reset_ms = e.headers.get('X-RATE-LIMIT-RESET')
-            if reset_ms:
-                reset_sec = float(reset_ms) / 1000.0
-                sleep_dur = min(300.0, reset_sec)
-                print(f"\n{YELLOW}[Rate Limit] Exceeded (HTTP 429). Auto-sleeping for {sleep_dur:.2f}s before retrying...{RESET}")
-                time.sleep(sleep_dur)
+                # Fallback to global Delta API for other HTTP errors
+                fallback_url = f"https://api.delta.exchange/v2/history/candles?{query}"
+                req_fallback = urllib.request.Request(fallback_url, headers={'User-Agent': 'Mozilla/5.0'})
                 try:
-                    with urllib.request.urlopen(req, timeout=10) as response:
+                    with urllib.request.urlopen(req_fallback, timeout=10) as response:
                         if response.status == 200:
                             data = json.loads(response.read().decode('utf-8'))
                             if data.get('success'):
                                 candles = data.get('result', [])
-                                # Sort chronologically (oldest to newest)
+                                if candles:
+                                    candles.sort(key=lambda x: x['time'])
+                                    return candles[-count:], None
+                except Exception:
+                    pass
+                last_err = f"HTTP error {e.code}: {e.reason}"
+        except urllib.error.URLError as e:
+            # Fallback to global Delta API just in case Delta India is down
+            fallback_url = f"https://api.delta.exchange/v2/history/candles?{query}"
+            req_fallback = urllib.request.Request(fallback_url, headers={'User-Agent': 'Mozilla/5.0'})
+            try:
+                with urllib.request.urlopen(req_fallback, timeout=10) as response:
+                    if response.status == 200:
+                        data = json.loads(response.read().decode('utf-8'))
+                        if data.get('success'):
+                            candles = data.get('result', [])
+                            if candles:
                                 candles.sort(key=lambda x: x['time'])
-                                return candles[-candle_count:], None
-                except Exception as retry_err:
-                    return [], f"Failed on rate limit retry: {str(retry_err)}"
-            return [], "API Rate Limit Exceeded (HTTP 429)."
-        
-        # Fallback to global Delta API for other HTTP errors
-        fallback_url = f"https://api.delta.exchange/v2/history/candles?{query}"
-        req_fallback = urllib.request.Request(fallback_url, headers={'User-Agent': 'Mozilla/5.0'})
-        try:
-            with urllib.request.urlopen(req_fallback, timeout=10) as response:
-                if response.status == 200:
-                    data = json.loads(response.read().decode('utf-8'))
-                    if data.get('success'):
-                        candles = data.get('result', [])
-                        candles.sort(key=lambda x: x['time'])
-                        return candles[-candle_count:], None
-        except Exception:
-            pass
-        return [], f"HTTP error {e.code}: {e.reason}"
-    except urllib.error.URLError as e:
-        # Fallback to global Delta API just in case Delta India is down
-        fallback_url = f"https://api.delta.exchange/v2/history/candles?{query}"
-        req_fallback = urllib.request.Request(fallback_url, headers={'User-Agent': 'Mozilla/5.0'})
-        try:
-            with urllib.request.urlopen(req_fallback, timeout=10) as response:
-                if response.status == 200:
-                    data = json.loads(response.read().decode('utf-8'))
-                    if data.get('success'):
-                        candles = data.get('result', [])
-                        candles.sort(key=lambda x: x['time'])
-                        return candles[-candle_count:], None
-        except Exception:
-            pass
-        return [], f"Failed to connect to API: {e.reason}"
-    except Exception as e:
-        return [], f"Unexpected error: {str(e)}"
+                                return candles[-count:], None
+            except Exception:
+                pass
+            last_err = f"Failed to connect to API: {e.reason}"
+        except Exception as e:
+            last_err = f"Unexpected error: {str(e)}"
+            
+    return [], last_err
 
 def render_ascii_chart(candles, height=12):
     """
@@ -994,6 +1428,32 @@ def calculate_ema(prices, period):
         ema_list[i] = (prices[i] * k) + (ema_list[i-1] * (1 - k))
         
     return ema_list
+
+def calculate_atr(candles, period=14):
+    """
+    Calculates the Average True Range (ATR).
+    """
+    if len(candles) < period:
+        return [0.0] * len(candles)
+        
+    tr_list = [0.0]
+    for i in range(1, len(candles)):
+        high = candles[i]['high']
+        low = candles[i]['low']
+        prev_close = candles[i-1]['close']
+        tr1 = high - low
+        tr2 = abs(high - prev_close)
+        tr3 = abs(low - prev_close)
+        tr_list.append(max(tr1, tr2, tr3))
+        
+    atr_list = [0.0] * len(candles)
+    sma_tr = sum(tr_list[1:period+1]) / period
+    atr_list[period] = sma_tr
+    
+    for i in range(period + 1, len(candles)):
+        atr_list[i] = (atr_list[i-1] * (period - 1) + tr_list[i]) / period
+        
+    return atr_list
 
 def analyze_ema_crossover(candles, fast_period=9, slow_period=21):
     """
@@ -1237,6 +1697,16 @@ def display_all_assets_dashboard(resolution='1d'):
         time.sleep(0.5)
     print()
 
+def get_live_usdt_balance(account_idx=1):
+    """Fetches the available USDT margin balance for the specified account."""
+    balances, err = make_authenticated_request("GET", "/v2/wallet/balances", account_idx=account_idx)
+    if err or not balances:
+        return 0.0
+    for bal in balances:
+        if bal.get('asset_symbol') == 'USDT':
+            return float(bal.get('balance', 0.0))
+    return 0.0
+
 def run_live_monitor(symbols, resolution, poll_interval=15, trade=False, trade_size=1):
     """
     Periodically polls the specified symbols at poll_interval (seconds).
@@ -1269,6 +1739,8 @@ def run_live_monitor(symbols, resolution, poll_interval=15, trade=False, trade_s
         
     opt_settings = load_optimized_settings()
     states = {}
+    trade_details = {}
+    last_evaluated_candle_time = {}
     alerts = []
     
     # First, initialize states
@@ -1283,7 +1755,7 @@ def run_live_monitor(symbols, resolution, poll_interval=15, trade=False, trade_s
             print(f"  {symbol}: Using GA optimized parameters Fast EMA({fast_period}) / Slow EMA({slow_period}).")
             
         candles, err = fetch_candle_data(symbol, resolution, slow_period + 45)
-        if err or not candles:
+        if err or not candles or len(candles) < 2:
             print(f"  {symbol}: {RED}Error initializing ({err or 'No data'}){RESET}")
             states[symbol] = "ERROR"
             continue
@@ -1292,13 +1764,15 @@ def run_live_monitor(symbols, resolution, poll_interval=15, trade=False, trade_s
         fast_ema = calculate_ema(closes, fast_period)
         slow_ema = calculate_ema(closes, slow_period)
         
-        if len(fast_ema) < slow_period or fast_ema[-1] is None or slow_ema[-1] is None:
+        if len(fast_ema) < slow_period + 2 or fast_ema[-2] is None or slow_ema[-2] is None:
             states[symbol] = "ERROR"
             continue
             
-        curr_state = "LONG" if fast_ema[-1] > slow_ema[-1] else "SHORT"
+        curr_state = "LONG" if fast_ema[-2] > slow_ema[-2] else "SHORT"
         states[symbol] = curr_state
-        print(f"  {symbol}: Tracked. Current state is {GREEN if curr_state=='LONG' else RED}{curr_state}{RESET} (Fast: {fast_ema[-1]:.4f} | Slow: {slow_ema[-1]:.4f})")
+        trade_details[symbol] = {'entry_price': 0, 'avg_price': 0, 'pyramid_count': 0, 'highest': 0, 'lowest': 0, 'stop_loss': 0}
+        last_evaluated_candle_time[symbol] = candles[-2]['time']
+        print(f"  {symbol}: Tracked. Current state is {GREEN if curr_state=='LONG' else RED}{curr_state}{RESET} (Fast: {fast_ema[-2]:.4f} | Slow: {slow_ema[-2]:.4f})")
         time.sleep(1) # Pacing API requests
         
     print(f"\n{GREEN}Initialization complete. Live monitoring active...{RESET}")
@@ -1314,7 +1788,7 @@ def run_live_monitor(symbols, resolution, poll_interval=15, trade=False, trade_s
             print(BOLD + CYAN + "└" + "─"*80 + "┘" + RESET)
             
             # Print status table
-            table_header = f" {'Symbol':<12} │ {'Price':<14} │ {'Fast EMA':<14} │ {'Slow EMA':<14} │ {'Signal State':<12}"
+            table_header = f" {'Symbol':<10} │ {'Price':<12} │ {'Fast':<10} │ {'Slow':<10} │ {'Macro':<10} │ {'ATR':<10} │ {'State':<12}"
             print(BOLD + table_header + RESET)
             print("─" * (len(table_header) + 1))
             
@@ -1326,73 +1800,198 @@ def run_live_monitor(symbols, resolution, poll_interval=15, trade=False, trade_s
                     fast_period = opt_settings[opt_key].get("fast_period", 9)
                     slow_period = opt_settings[opt_key].get("slow_period", 21)
                     
+                req_candles = (slow_period * 4) + 45
+                
                 if symbol not in states or states[symbol] == "ERROR":
                     # Try to re-initialize
-                    candles, err = fetch_candle_data(symbol, resolution, slow_period + 45)
-                    if not err and candles:
+                    candles, err = fetch_candle_data(symbol, resolution, req_candles)
+                    if not err and candles and len(candles) >= 2:
                         closes = [c['close'] for c in candles]
                         fast_ema = calculate_ema(closes, fast_period)
                         slow_ema = calculate_ema(closes, slow_period)
-                        if len(fast_ema) >= slow_period and fast_ema[-1] is not None and slow_ema[-1] is not None:
-                            states[symbol] = "LONG" if fast_ema[-1] > slow_ema[-1] else "SHORT"
+                        macro_ema = calculate_ema(closes, slow_period * 4)
+                        if len(fast_ema) >= slow_period + 2 and fast_ema[-2] is not None and slow_ema[-2] is not None and macro_ema[-2] is not None:
+                            # Advanced MTF Entry
+                            if fast_ema[-2] > slow_ema[-2] and closes[-2] > macro_ema[-2]:
+                                states[symbol] = "LONG"
+                            elif fast_ema[-2] < slow_ema[-2] and closes[-2] < macro_ema[-2]:
+                                states[symbol] = "SHORT"
+                            else:
+                                states[symbol] = "FLAT"
+                            last_evaluated_candle_time[symbol] = candles[-2]['time']
                     
                 if symbol not in states or states[symbol] == "ERROR":
-                    print(f" {symbol:<12} │ {RED}{'ERR_FETCH':<14}{RESET} │ {'-':<14} │ {'-':<14} │ {RED}{'ERROR':<12}{RESET}")
+                    print(f" {symbol:<10} │ {RED}{'ERR_FETCH':<12}{RESET} │ {'-':<10} │ {'-':<10} │ {'-':<10} │ {'-':<10} │ {RED}{'ERROR':<12}{RESET}")
                     states[symbol] = "ERROR"
                     continue
                     
-                # Fetch latest candle data (we fetch slow_period + 45 candles to get accurate EMAs)
-                candles, err = fetch_candle_data(symbol, resolution, slow_period + 45)
-                if err or not candles:
-                    # Print using cached state but mark price as stale
-                    print(f" {symbol:<12} │ {YELLOW}{'STALE':<14}{RESET} │ {'-':<14} │ {'-':<14} │ {states[symbol]:<12}")
+                # Fetch latest candle data
+                candles, err = fetch_candle_data(symbol, resolution, req_candles)
+                if err or not candles or len(candles) < 2:
+                    print(f" {symbol:<10} │ {YELLOW}{'STALE':<12}{RESET} │ {'-':<10} │ {'-':<10} │ {'-':<10} │ {'-':<10} │ {states[symbol]:<12}")
                     continue
                     
                 closes = [c['close'] for c in candles]
                 fast_ema = calculate_ema(closes, fast_period)
                 slow_ema = calculate_ema(closes, slow_period)
+                macro_ema = calculate_ema(closes, slow_period * 4)
+                atr_vals = calculate_atr(candles, 14)
                 
                 f_val = fast_ema[-1]
                 s_val = slow_ema[-1]
+                m_val = macro_ema[-1]
+                curr_atr = atr_vals[-1]
                 latest_close = closes[-1]
                 
-                new_state = "LONG" if f_val > s_val else "SHORT"
+                if m_val is None:
+                    macro_str = "-"
+                    macro_color = RESET
+                else:
+                    is_bull = latest_close > m_val
+                    macro_str = "BULL" if is_bull else "BEAR"
+                    macro_color = GREEN if is_bull else RED
                 
-                # Check if crossover has occurred
-                if new_state != states[symbol]:
-                    print("\a", end="")
-                    alert_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    alerts.append(f"[{alert_time}] ★ {symbol} crossed over to {new_state} at {latest_close:.4f} USD")
-                    states[symbol] = new_state
+                # Check for crossover only when a new candle closes
+                closed_candle_time = candles[-2]['time']
+                if symbol not in last_evaluated_candle_time:
+                    last_evaluated_candle_time[symbol] = closed_candle_time
                     
-                    if trade:
-                        if new_state == "LONG":
-                            print(f"\n{GREEN}[Trade Action] LONG crossover triggered for {symbol}.{RESET}")
-                            # 1. Close active SHORT positions on Account 2
-                            close_res, close_err = close_position_if_any(symbol, account_idx=2)
-                            if close_err:
-                                print(f"  {RED}Failed to close short position on Account 2: {close_err}{RESET}")
-                            # 2. Enter LONG position on Account 1
-                            order_res, order_err = place_market_order(symbol, "buy", size=trade_size, account_idx=1)
-                            if order_err:
-                                print(f"  {RED}Failed to open LONG on Account 1: {order_err}{RESET}")
-                            else:
-                                print(f"  {GREEN}LONG order placed successfully on Account 1!{RESET}")
-                        elif new_state == "SHORT":
-                            print(f"\n{RED}[Trade Action] SHORT crossover triggered for {symbol}.{RESET}")
-                            # 1. Close active LONG positions on Account 1
-                            close_res, close_err = close_position_if_any(symbol, account_idx=1)
-                            if close_err:
-                                print(f"  {RED}Failed to close long position on Account 1: {close_err}{RESET}")
-                            # 2. Enter SHORT position on Account 2
-                            order_res, order_err = place_market_order(symbol, "sell", size=trade_size, account_idx=2)
-                            if order_err:
-                                print(f"  {RED}Failed to open SHORT on Account 2: {order_err}{RESET}")
-                            else:
-                                print(f"  {GREEN}SHORT order placed successfully on Account 2!{RESET}")
+                if closed_candle_time > last_evaluated_candle_time[symbol]:
+                    f_closed = fast_ema[-2]
+                    s_closed = slow_ema[-2]
+                    m_closed = macro_ema[-2]
+                    cl_closed = closes[-2]
                     
-                pos_color = GREEN if new_state == "LONG" else RED
-                print(f" {symbol:<12} │ {latest_close:<14.4f} │ {f_val:<14.4f} │ {s_val:<14.4f} │ {pos_color}{new_state:<12}{RESET}")
+                    if f_closed is not None and s_closed is not None and m_closed is not None:
+                        new_state = states[symbol]
+                        
+                        if f_closed > s_closed and cl_closed > m_closed:
+                            new_state = "LONG"
+                        elif f_closed < s_closed and cl_closed < m_closed:
+                            new_state = "SHORT"
+                            
+                        if new_state != states[symbol]:
+                            print("\a", end="")
+                            alert_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            alerts.append(f"[{alert_time}] ★ {symbol} crossed over to {new_state} at {closes[-2]:.4f} USD")
+                            states[symbol] = new_state
+                            td = trade_details[symbol]
+                            
+                            if trade:
+                                if new_state == "LONG":
+                                    print(f"\n{GREEN}[Trade Action] LONG crossover triggered for {symbol}.{RESET}")
+                                    td['entry_price'] = cl_closed
+                                    td['avg_price'] = cl_closed
+                                    td['highest'] = cl_closed
+                                    td['stop_loss'] = cl_closed - (curr_atr * 2)
+                                    td['pyramid_count'] = 0
+                                    
+                                    close_res, close_err = close_position_if_any(symbol, account_idx=2)
+                                    
+                                    # Fractional Kelly Sizing
+                                    balance = get_live_usdt_balance(account_idx=1)
+                                    sl_distance = curr_atr * 2
+                                    dynamic_size = trade_size
+                                    if balance > 0 and sl_distance > 0:
+                                        dynamic_size = (balance * 0.02) / sl_distance
+                                        print(f"  {CYAN}Calculated Kelly Lot Size: {dynamic_size:.3f} (Bal: ${balance:.2f}, Risk: 2%, SL: ${sl_distance:.2f}){RESET}")
+                                        
+                                        actual_size = max(1, int(dynamic_size))
+                                        pct_risk = (actual_size * sl_distance) / balance
+                                        if pct_risk > 0.05:
+                                            print(f"  {RED}[WARNING: Burner Phase / Over-Leveraged] Due to low balance, this trade will risk {pct_risk*100.0:.1f}% of equity instead of 2.0% Kelly limits!{RESET}")
+                                    
+                                    order_res, order_err = place_market_order(symbol, "buy", size=dynamic_size, account_idx=1)
+                                elif new_state == "SHORT":
+                                    print(f"\n{RED}[Trade Action] SHORT crossover triggered for {symbol}.{RESET}")
+                                    td['entry_price'] = cl_closed
+                                    td['avg_price'] = cl_closed
+                                    td['lowest'] = cl_closed
+                                    td['stop_loss'] = cl_closed + (curr_atr * 2)
+                                    td['pyramid_count'] = 0
+                                    
+                                    close_res, close_err = close_position_if_any(symbol, account_idx=1)
+                                    
+                                    # Fractional Kelly Sizing
+                                    balance = get_live_usdt_balance(account_idx=2)
+                                    sl_distance = curr_atr * 2
+                                    dynamic_size = trade_size
+                                    if balance > 0 and sl_distance > 0:
+                                        dynamic_size = (balance * 0.02) / sl_distance
+                                        print(f"  {CYAN}Calculated Kelly Lot Size: {dynamic_size:.3f} (Bal: ${balance:.2f}, Risk: 2%, SL: ${sl_distance:.2f}){RESET}")
+                                        
+                                        actual_size = max(1, int(dynamic_size))
+                                        pct_risk = (actual_size * sl_distance) / balance
+                                        if pct_risk > 0.05:
+                                            print(f"  {RED}[WARNING: Burner Phase / Over-Leveraged] Due to low balance, this trade will risk {pct_risk*100.0:.1f}% of equity instead of 2.0% Kelly limits!{RESET}")
+                                        
+                                    order_res, order_err = place_market_order(symbol, "sell", size=dynamic_size, account_idx=2)
+                        
+                        last_evaluated_candle_time[symbol] = closed_candle_time
+                
+                # --- LIVE STATE ENGINE: Pyramiding & Trailing Stops ---
+                td = trade_details[symbol]
+                if states[symbol] == "LONG":
+                    if latest_close > td['highest']:
+                        td['highest'] = latest_close
+                        new_sl = latest_close - (curr_atr * 2)
+                        if new_sl > td['stop_loss']:
+                            td['stop_loss'] = new_sl
+                            
+                    if latest_close <= td['stop_loss'] and td['entry_price'] > 0:
+                        print(f"\n{YELLOW}[Trailing Stop] {symbol} hit Long trailing stop at {latest_close:.4f}{RESET}")
+                        if trade:
+                            close_position_if_any(symbol, account_idx=1)
+                        states[symbol] = "FLAT"
+                        td['entry_price'] = 0
+                        
+                    elif td['entry_price'] > 0 and latest_close >= td['avg_price'] + (curr_atr * 1.5) and td['pyramid_count'] < 3:
+                        print(f"\n{GREEN}[Pyramid] {symbol} Long moved +1.5 ATR. Scaling in (Layer {td['pyramid_count']+1})!{RESET}")
+                        if trade:
+                            balance = get_live_usdt_balance(account_idx=1)
+                            sl_distance = curr_atr * 2
+                            dynamic_size = trade_size
+                            if balance > 0 and sl_distance > 0:
+                                dynamic_size = (balance * 0.01) / sl_distance # Half-Kelly for Pyramids
+                            place_market_order(symbol, "buy", size=dynamic_size, account_idx=1)
+                        td['avg_price'] = (td['avg_price'] + latest_close) / 2
+                        td['pyramid_count'] += 1
+
+                elif states[symbol] == "SHORT":
+                    if td['lowest'] == 0 or latest_close < td['lowest']:
+                        td['lowest'] = latest_close
+                        new_sl = latest_close + (curr_atr * 2)
+                        if td['stop_loss'] == 0 or new_sl < td['stop_loss']:
+                            td['stop_loss'] = new_sl
+                            
+                    if latest_close >= td['stop_loss'] and td['entry_price'] > 0:
+                        print(f"\n{YELLOW}[Trailing Stop] {symbol} hit Short trailing stop at {latest_close:.4f}{RESET}")
+                        if trade:
+                            close_position_if_any(symbol, account_idx=2)
+                        states[symbol] = "FLAT"
+                        td['entry_price'] = 0
+                        
+                    elif td['entry_price'] > 0 and latest_close <= td['avg_price'] - (curr_atr * 1.5) and td['pyramid_count'] < 3:
+                        print(f"\n{RED}[Pyramid] {symbol} Short moved +1.5 ATR. Scaling in (Layer {td['pyramid_count']+1})!{RESET}")
+                        if trade:
+                            balance = get_live_usdt_balance(account_idx=2)
+                            sl_distance = curr_atr * 2
+                            dynamic_size = trade_size
+                            if balance > 0 and sl_distance > 0:
+                                dynamic_size = (balance * 0.01) / sl_distance # Half-Kelly for Pyramids
+                            place_market_order(symbol, "sell", size=dynamic_size, account_idx=2)
+                        td['avg_price'] = (td['avg_price'] + latest_close) / 2
+                        td['pyramid_count'] += 1
+                # ------------------------------------------------------
+                
+                if states[symbol] == "LONG":
+                    pos_color = GREEN
+                elif states[symbol] == "SHORT":
+                    pos_color = RED
+                else:
+                    pos_color = YELLOW
+                    
+                print(f" {symbol:<10} │ {latest_close:<12.4f} │ {f_val:<10.2f} │ {s_val:<10.2f} │ {macro_color}{macro_str:<10}{RESET} │ {curr_atr:<10.4f} │ {pos_color}{states[symbol]:<12}{RESET}")
                 
                 # Pace API requests by 1 second to prevent rate limiting
                 time.sleep(1)
@@ -1510,7 +2109,11 @@ def interactive_mode():
         elif choice == '7':
             symbol = "ALL"
         elif choice == '8':
-            symbol = input(BOLD + "Enter Delta Exchange symbol (e.g., BTCUSD, ETHUSD, SOLUSD): " + RESET).strip().upper()
+            print(f"\n{YELLOW}Popular symbols on Delta Exchange:{RESET}")
+            print(f"  {CYAN}Cryptocurrencies:{RESET} BTCUSD, ETHUSD, SOLUSD, XRPUSD, BNBUSD, AVAXUSD, SUIUSD, DOGEUSD, PEPEUSD")
+            print(f"  {CYAN}Stock Indices:{RESET}    SPYXUSD, QQQXUSD")
+            print(f"  {CYAN}Commodities:{RESET}      XAUTUSD, SLVONUSD\n")
+            symbol = input(BOLD + "Enter Delta Exchange symbol: " + RESET).strip().upper()
             if not symbol:
                 print("Invalid Symbol. Press Enter to return.")
                 input()
@@ -1529,7 +2132,11 @@ def interactive_mode():
             if mon_choice == '1':
                 symbols = [PRECONFIGURED_ASSETS[k]['symbol'] for k in sorted(PRECONFIGURED_ASSETS.keys(), key=int)]
             elif mon_choice == '2':
-                sym = input(BOLD + "Enter symbol to monitor (e.g., SOLUSD): " + RESET).strip().upper()
+                print(f"\n{YELLOW}Popular symbols on Delta Exchange:{RESET}")
+                print(f"  {CYAN}Cryptocurrencies:{RESET} BTCUSD, ETHUSD, SOLUSD, XRPUSD, BNBUSD, AVAXUSD, SUIUSD, DOGEUSD, PEPEUSD")
+                print(f"  {CYAN}Stock Indices:{RESET}    SPYXUSD, QQQXUSD")
+                print(f"  {CYAN}Commodities:{RESET}      XAUTUSD, SLVONUSD\n")
+                sym = input(BOLD + "Enter symbol to monitor: " + RESET).strip().upper()
                 if sym:
                     symbols = [sym]
                 else:
@@ -1648,7 +2255,11 @@ def interactive_mode():
             print(BOLD + CYAN + "┌" + "─"*50 + "┐" + RESET)
             print(BOLD + CYAN + "│" + f" GENETIC ALGORITHM OPTIMIZER ".center(50) + "│" + RESET)
             print(BOLD + CYAN + "└" + "─"*50 + "┘" + RESET)
-            sym = input(BOLD + "Enter symbol to optimize (e.g., SOLUSD): " + RESET).strip().upper()
+            print(f"\n{YELLOW}Popular symbols on Delta Exchange:{RESET}")
+            print(f"  {CYAN}Cryptocurrencies:{RESET} BTCUSD, ETHUSD, SOLUSD, XRPUSD, BNBUSD, AVAXUSD, SUIUSD, DOGEUSD, PEPEUSD")
+            print(f"  {CYAN}Stock Indices:{RESET}    SPYXUSD, QQQXUSD")
+            print(f"  {CYAN}Commodities:{RESET}      XAUTUSD, SLVONUSD\n")
+            sym = input(BOLD + "Enter symbol to optimize: " + RESET).strip().upper()
             if not sym:
                 continue
                 
@@ -1661,19 +2272,32 @@ def interactive_mode():
                 print(BOLD + CYAN + "│" + f"{line:<48}" + "│" + RESET)
             print(BOLD + CYAN + "└" + "─"*50 + "┘" + RESET)
             
-            res_choice = input(BOLD + "\nSelect resolution (1-8, Default 1d): " + RESET).strip()
-            resolution = '1d'
-            if res_choice.isdigit():
-                idx = int(res_choice) - 1
-                if 0 <= idx < len(sorted_resolutions):
-                    resolution = sorted_resolutions[idx]
+            print(f"\n{YELLOW}[Help: Select the timeframe/candle size. '1h' or '4h' is recommended.]{RESET}")
+            res_choice = input(BOLD + "Select resolution (1-8, Default 1d): " + RESET).strip()
+            resolution = parse_resolution_input(res_choice, '1d')
                     
-            gen_input = input(BOLD + "Enter number of GA generations (Default 10): " + RESET).strip()
-            generations = 10
-            if gen_input.isdigit():
-                generations = max(1, int(gen_input))
+            print(f"\n{YELLOW}[Help: META tuning optimizes the optimizer's speed and depth. It takes longer but is more thorough. Recommended: 'n'.]{RESET}")
+            meta_choice = input(BOLD + "Run META hyperparameter optimization first? (y/N): " + RESET).strip().lower()
+            if meta_choice == 'y':
+                meta_gens = get_validated_int_input(
+                    "Enter Meta-GA generations (Default 5): ",
+                    "Number of optimization tuning cycles. Recommended 5, Max 20 (higher values can take hours).",
+                    5, 1, 20
+                )
+                meta_pop = get_validated_int_input(
+                    "Enter Meta-GA population size (Default 10): ",
+                    "Number of candidate configurations per cycle. Recommended 10, Max 30.",
+                    10, 5, 30
+                )
+                run_meta_genetic_optimization(sym, resolution, meta_gens, meta_pop)
+            else:
+                generations = get_validated_int_input(
+                    "Enter number of GA generations (Default 15): ",
+                    "Evolution cycles for finding best EMAs. Recommended 15, Max 50.",
+                    15, 1, 50
+                )
+                run_genetic_optimization(sym, resolution, generations)
                 
-            run_genetic_optimization(sym, resolution, generations)
             input(BOLD + "\nPress Enter to return to menu... " + RESET)
             continue
             
@@ -1704,7 +2328,11 @@ def interactive_mode():
                     if mon_choice == '1':
                         symbols = [PRECONFIGURED_ASSETS[k]['symbol'] for k in sorted(PRECONFIGURED_ASSETS.keys(), key=int)]
                     elif mon_choice == '2':
-                        sym = input(BOLD + "Enter symbol (e.g., SOLUSD): " + RESET).strip().upper()
+                        print(f"\n{YELLOW}Popular symbols on Delta Exchange:{RESET}")
+                        print(f"  {CYAN}Cryptocurrencies:{RESET} BTCUSD, ETHUSD, SOLUSD, XRPUSD, BNBUSD, AVAXUSD, SUIUSD, DOGEUSD, PEPEUSD")
+                        print(f"  {CYAN}Stock Indices:{RESET}    SPYXUSD, QQQXUSD")
+                        print(f"  {CYAN}Commodities:{RESET}      XAUTUSD, SLVONUSD\n")
+                        sym = input(BOLD + "Enter symbol: " + RESET).strip().upper()
                         if sym:
                             symbols = [sym]
                     if not symbols:
@@ -1721,17 +2349,15 @@ def interactive_mode():
                         print(BOLD + CYAN + "│" + f"{line:<48}" + "│" + RESET)
                     print(BOLD + CYAN + "└" + "─"*50 + "┘" + RESET)
                     
-                    res_choice = input(BOLD + "\nSelect resolution (1-8, Default 1m): " + RESET).strip()
-                    resolution = '1m'
-                    if res_choice.isdigit():
-                        idx = int(res_choice) - 1
-                        if 0 <= idx < len(sorted_resolutions):
-                            resolution = sorted_resolutions[idx]
+                    print(f"\n{YELLOW}[Help: Select the timeframe/candle size. '1h' or '4h' is recommended.]{RESET}")
+                    res_choice = input(BOLD + "Select resolution (1-8, Default 1m): " + RESET).strip()
+                    resolution = parse_resolution_input(res_choice, '1m')
                             
-                    int_input = input(BOLD + "Enter polling interval in seconds (5-300, Default 15): " + RESET).strip()
-                    poll_interval = 15
-                    if int_input.isdigit():
-                        poll_interval = max(5, min(300, int(int_input)))
+                    poll_interval = get_validated_int_input(
+                        "Enter polling interval in seconds (5-300, Default 15): ",
+                        "How often the bot checks for new candles and calculates crossovers. Min 5s, Max 300s.",
+                        15, 5, 300
+                    )
                         
                     daemon_args = []
                     if mon_choice == '1':
@@ -1742,12 +2368,16 @@ def interactive_mode():
                     
                     api_active = bool(os.getenv("DELTA_API_KEY_1") or os.getenv("DELTA_API_KEY"))
                     if api_active:
+                        print(f"\n{YELLOW}[Help: Type 'y' to allow the bot to place real trades using your account keys.]{RESET}")
                         trade_choice = input(BOLD + "Enable Crossover Trading? (y/N): " + RESET).strip().lower()
                         if trade_choice == 'y':
                             daemon_args += ["--trade"]
-                            size_input = input(BOLD + "Enter trade contract size (Default 1): " + RESET).strip()
-                            if size_input.isdigit():
-                                daemon_args += ["--trade-size", size_input]
+                            trade_size_val = get_validated_int_input(
+                                "Enter trade contract size (Default 1): ",
+                                "The fallback order size if dynamic Kelly balance is unavailable. Min 1, Max 1000.",
+                                1, 1, 1000
+                            )
+                            daemon_args += ["--trade-size", str(trade_size_val)]
                                 
                     start_daemon(daemon_args)
                     time.sleep(2)
@@ -1786,11 +2416,7 @@ def interactive_mode():
         print(BOLD + CYAN + "└" + "─"*50 + "┘" + RESET)
         
         res_choice = input(BOLD + "\nSelect resolution (1-8, Default 1d): " + RESET).strip()
-        resolution = '1d'
-        if res_choice.isdigit():
-            idx = int(res_choice) - 1
-            if 0 <= idx < len(sorted_resolutions):
-                resolution = sorted_resolutions[idx]
+        resolution = parse_resolution_input(res_choice, '1d')
 
         if symbol == "ALL":
             print(f"\n{CYAN}Fetching data for all assets...{RESET}")
@@ -1875,6 +2501,9 @@ def main():
     parser.add_argument('--status', action='store_true', help='Check background bot status and print logs')
     parser.add_argument('--optimize', action='store_true', help='Run Genetic Algorithm to optimize EMA settings')
     parser.add_argument('--opt-generations', type=int, default=10, help='Generations for optimizer (default: 10)')
+    parser.add_argument('--meta-optimize', action='store_true', help='Run Meta Genetic Algorithm to tune hyperparameters first')
+    parser.add_argument('--meta-generations', type=int, default=5, help='Generations for meta optimizer (default: 5)')
+    parser.add_argument('--meta-pop-size', type=int, default=10, help='Population size for meta optimizer (default: 10)')
     
     args = parser.parse_args()
 
@@ -1898,7 +2527,10 @@ def main():
         if not args.symbol or args.symbol.upper() == 'ALL':
             print(f"{RED}Error: You must specify a single specific symbol (e.g. -s SOLUSD) to run optimization.{RESET}")
             sys.exit(1)
-        run_genetic_optimization(args.symbol.upper(), args.resolution, args.opt_generations)
+        if args.meta_optimize:
+            run_meta_genetic_optimization(args.symbol.upper(), args.resolution, args.meta_generations, args.meta_pop_size)
+        else:
+            run_genetic_optimization(args.symbol.upper(), args.resolution, args.opt_generations)
         sys.exit(0)
 
     if args.account_info:
