@@ -1,12 +1,37 @@
 {
   "SOLUSD_1h": {
-    "fast_period": 10,
-    "slow_period": 67,
-    "updated_at": "2026-07-15 18:25:25"
+    "fast_period": 8,
+    "slow_period": 80,
+    "updated_at": "2026-07-16 12:51:39"
   },
   "SOLUSD_30m": {
     "fast_period": 7,
     "slow_period": 73,
     "updated_at": "2026-07-15 18:40:42"
+  },
+  "SOLUSD_1d": {
+    "fast_period": 22,
+    "slow_period": 50,
+    "updated_at": "2026-07-16 12:25:17"
+  },
+  "SOLUSD_4h": {
+    "fast_period": 22,
+    "slow_period": 57,
+    "updated_at": "2026-07-16 12:39:57"
+  },
+  "XRPUSD_1h": {
+    "fast_period": 18,
+    "slow_period": 112,
+    "updated_at": "2026-07-16 12:48:43"
+  },
+  "XAUTUSD_1d": {
+    "fast_period": 15,
+    "slow_period": 54,
+    "updated_at": "2026-07-16 12:50:23"
+  },
+  "QQQXUSD_1h": {
+    "fast_period": 25,
+    "slow_period": 50,
+    "updated_at": "2026-07-16 12:53:24"
   }
 }
