@@ -840,11 +840,69 @@ def run_autopilot_setup(resolution='1h', generations=10):
     print(BOLD + MAGENTA + "│" + " FULLY AUTONOMOUS AUTO-PILOT ORCHESTRATION ".center(60) + "│" + RESET)
     print(BOLD + MAGENTA + "└" + "─"*60 + "┘" + RESET)
     
-    # 1. Filter for 24/7 crypto assets from preconfigured
+    # Check wallet balance to adapt target assets
+    active_idx = None
+    if os.getenv("DELTA_API_KEY_3"):
+        active_idx = 3
+    elif os.getenv("DELTA_API_KEY_1") or os.getenv("DELTA_API_KEY"):
+        active_idx = 1
+    
+    wallet_balance = 0.0
+    if active_idx:
+        wallet_balance = get_live_usdt_balance(account_idx=active_idx)
+    
+    print(f"\n{CYAN}[Auto-Pilot] Checking Wallet Balance... USDT Available: ${wallet_balance:.2f}{RESET}")
+    
     target_symbols = []
-    for k, v in PRECONFIGURED_ASSETS.items():
-        if v['category'] == 'Cryptocurrency':
-            target_symbols.append(v['symbol'])
+    
+    # 1. Dynamically scan Delta Exchange for crypto perp assets that fit within leverage/balance constraints
+    try:
+        print(f"{CYAN}[Auto-Pilot] Scanning Delta Exchange for optimal high-volume crypto assets...{RESET}")
+        url = "https://api.india.delta.exchange/v2/tickers"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=10) as response:
+            if response.status == 200:
+                tickers = json.loads(response.read().decode('utf-8')).get('result', [])
+                tradable = []
+                # If balance is zero or unconfigured, default to $50 to scan standard assets
+                eff_balance = wallet_balance if wallet_balance > 0 else 50.0
+                
+                for t in tickers:
+                    if t.get('contract_type') != 'perpetual_futures' or t.get('top_tag') != 'crypto':
+                        continue
+                    try:
+                        val = float(t.get('contract_value', 1.0))
+                        price = float(t.get('mark_price') or t.get('close') or 0)
+                        notional = val * price
+                        if price <= 0:
+                            continue
+                        
+                        # Ensure the minimum order size (1 contract notional value) does not exceed 20x the effective balance.
+                        # This protects small accounts from instant liquidation due to high mandatory leverage.
+                        if notional <= eff_balance * 20:
+                            tradable.append({
+                                'symbol': t['symbol'],
+                                'notional': notional,
+                                'turnover_usd': float(t.get('turnover_usd') or 0)
+                            })
+                    except Exception:
+                        continue
+                
+                tradable.sort(key=lambda x: x['turnover_usd'], reverse=True)
+                target_symbols = [x['symbol'] for x in tradable[:3]]
+                
+                if wallet_balance > 0 and wallet_balance <= 5.0:
+                    print(f"{YELLOW}[Auto-Pilot] Low balance detected (${wallet_balance:.2f}). Dynamically restricted search to micro-contract assets with notional values under ${wallet_balance * 20:.2f}.{RESET}")
+                else:
+                    print(f"{GREEN}[Auto-Pilot] Balance check passed. Selecting highest volume tradable crypto assets.{RESET}")
+    except Exception as e:
+        print(f"{RED}[Auto-Pilot] Dynamic scanning failed: {e}. Falling back to preconfigured assets.{RESET}")
+        
+    if not target_symbols:
+        # Fallback to preconfigured cryptos (SOLUSD, XRPUSD)
+        for k, v in PRECONFIGURED_ASSETS.items():
+            if v['category'] == 'Cryptocurrency':
+                target_symbols.append(v['symbol'])
             
     print(f"\n{CYAN}[Auto-Pilot] Step 1: Target Assets Identified: {', '.join(target_symbols)}{RESET}")
     time.sleep(2)
@@ -892,19 +950,20 @@ def save_env_keys(account_idx, key, secret, name=None):
             if len(parts) == 2:
                 env_dict[parts[0].strip()] = parts[1].strip()
                 
-    env_dict[f"DELTA_API_KEY_{account_idx}"] = key
-    env_dict[f"DELTA_API_SECRET_{account_idx}"] = secret
+    acc_idx_str = str(account_idx)
+    env_dict[f"DELTA_API_KEY_{acc_idx_str}"] = key
+    env_dict[f"DELTA_API_SECRET_{acc_idx_str}"] = secret
     if name:
-        env_dict[f"DELTA_ACCOUNT_NAME_{account_idx}"] = name
+        env_dict[f"DELTA_ACCOUNT_NAME_{acc_idx_str}"] = name
     else:
-        if account_idx == 1:
-            env_dict[f"DELTA_ACCOUNT_NAME_{account_idx}"] = "LONG_Account"
-        elif account_idx == 2:
-            env_dict[f"DELTA_ACCOUNT_NAME_{account_idx}"] = "SHORT_Account"
+        if acc_idx_str == '1':
+            env_dict[f"DELTA_ACCOUNT_NAME_{acc_idx_str}"] = "LONG_Account"
+        elif acc_idx_str == '2':
+            env_dict[f"DELTA_ACCOUNT_NAME_{acc_idx_str}"] = "SHORT_Account"
         else:
-            env_dict[f"DELTA_ACCOUNT_NAME_{account_idx}"] = "BOTH_Account"
+            env_dict[f"DELTA_ACCOUNT_NAME_{acc_idx_str}"] = "BOTH_Account"
         
-    if account_idx == 1:
+    if acc_idx_str == '1':
         env_dict["DELTA_API_KEY"] = key
         env_dict["DELTA_API_SECRET"] = secret
         
@@ -928,11 +987,12 @@ def remove_env_keys(account_idx):
             if len(parts) == 2:
                 env_dict[parts[0].strip()] = parts[1].strip()
                 
-    env_dict.pop(f"DELTA_API_KEY_{account_idx}", None)
-    env_dict.pop(f"DELTA_API_SECRET_{account_idx}", None)
-    env_dict.pop(f"DELTA_ACCOUNT_NAME_{account_idx}", None)
+    acc_idx_str = str(account_idx)
+    env_dict.pop(f"DELTA_API_KEY_{acc_idx_str}", None)
+    env_dict.pop(f"DELTA_API_SECRET_{acc_idx_str}", None)
+    env_dict.pop(f"DELTA_ACCOUNT_NAME_{acc_idx_str}", None)
     
-    if account_idx == 1:
+    if acc_idx_str == '1':
         env_dict.pop("DELTA_API_KEY", None)
         env_dict.pop("DELTA_API_SECRET", None)
         
@@ -956,10 +1016,11 @@ def make_authenticated_request(method, path, query_params=None, payload=None, ac
     Makes a signed, authenticated request to Delta Exchange API.
     Supports routing to Account 1 or Account 2 by account_idx.
     """
-    if account_idx == 3:
+    acc_idx_str = str(account_idx)
+    if acc_idx_str == '3':
         api_key = os.getenv("DELTA_API_KEY_3")
         api_secret = os.getenv("DELTA_API_SECRET_3")
-    elif account_idx == 2:
+    elif acc_idx_str == '2':
         api_key = os.getenv("DELTA_API_KEY_2")
         api_secret = os.getenv("DELTA_API_SECRET_2")
     else:
@@ -967,7 +1028,7 @@ def make_authenticated_request(method, path, query_params=None, payload=None, ac
         api_secret = os.getenv("DELTA_API_SECRET_1") or os.getenv("DELTA_API_SECRET")
     
     if not api_key or not api_secret:
-        return None, f"API credentials for Account {account_idx} not configured."
+        return None, f"API credentials for Account {acc_idx_str} not configured."
         
     timestamp = str(int(time.time()))
     
@@ -1012,14 +1073,22 @@ def make_authenticated_request(method, path, query_params=None, payload=None, ac
                 if data.get('success'):
                     return data.get('result'), None
                 else:
-                    return None, f"API Error: {data.get('error', {}).get('message', 'Unknown error')}"
+                    err_val = data.get('error', {})
+                    if isinstance(err_val, dict):
+                        err_msg = err_val.get('message', 'Unknown error')
+                    else:
+                        err_msg = str(err_val)
+                    return None, f"API Error: {err_msg}"
             else:
                 return None, f"HTTP Error {response.status}"
     except urllib.error.HTTPError as e:
         if e.code == 429:
             reset_ms = e.headers.get('X-RATE-LIMIT-RESET')
             if reset_ms:
-                reset_sec = float(reset_ms) / 1000.0
+                try:
+                    reset_sec = float(reset_ms) / 1000.0
+                except (TypeError, ValueError):
+                    reset_sec = 5.0
                 sleep_dur = min(300.0, reset_sec)
                 print(f"\n{YELLOW}[Rate Limit] Exceeded (HTTP 429). Auto-sleeping for {sleep_dur:.2f}s before retrying...{RESET}")
                 time.sleep(sleep_dur)
@@ -1051,7 +1120,11 @@ def make_authenticated_request(method, path, query_params=None, payload=None, ac
             return None, "API Rate Limit Exceeded (HTTP 429)."
         try:
             err_data = json.loads(e.read().decode('utf-8'))
-            err_msg = err_data.get('error', {}).get('message') or err_data.get('error', {}).get('code') or e.reason
+            err_val = err_data.get('error', {})
+            if isinstance(err_val, dict):
+                err_msg = err_val.get('message') or err_val.get('code') or e.reason
+            else:
+                err_msg = str(err_val) or e.reason
             return None, f"API Error: {err_msg}"
         except Exception:
             return None, f"HTTP Error {e.code}: {e.reason}"
@@ -1113,11 +1186,11 @@ def fetch_and_show_account():
             
         # 2. Positions
         print(BOLD + MAGENTA + "--- Open Positions ---" + RESET)
-        positions, err = make_authenticated_request("GET", "/v2/positions", account_idx=idx)
+        positions, err = make_authenticated_request("GET", "/v2/positions/margined", account_idx=idx)
         if err:
             print(f"  {RED}Error fetching positions: {err}{RESET}\n")
         else:
-            active_positions = [pos for pos in positions if int(pos.get('size', 0)) != 0] if positions else []
+            active_positions = [pos for pos in positions if int(float(pos.get('size', 0))) != 0] if positions else []
             if not active_positions:
                 print("  No active open positions.\n")
             else:
@@ -1125,7 +1198,7 @@ def fetch_and_show_account():
                 print(BOLD + pos_header + RESET)
                 print("─" * (len(pos_header) + 1))
                 for pos in active_positions:
-                    size = int(pos.get('size', 0))
+                    size = int(float(pos.get('size', 0)))
                     direction = f"{GREEN}LONG{RESET}" if size > 0 else f"{RED}SHORT{RESET}"
                     pnl = float(pos.get('realized_pnl', 0))
                     pnl_color = GREEN if pnl >= 0 else RED
@@ -1190,13 +1263,13 @@ def close_position_if_any(symbol, account_idx=1):
     Checks if there is an active open position for the symbol on the account.
     If so, places a market order in the opposite direction to close it.
     """
-    positions, err = make_authenticated_request("GET", "/v2/positions", account_idx=account_idx)
+    positions, err = make_authenticated_request("GET", "/v2/positions/margined", account_idx=account_idx)
     if err or not positions:
         return None, f"No positions fetched or error: {err}"
         
     for pos in positions:
         if pos.get('product_symbol') == symbol:
-            size = int(pos.get('size', 0))
+            size = int(float(pos.get('size', 0)))
             if size != 0:
                 side = "sell" if size > 0 else "buy"
                 print(f"Closing existing position for {symbol} on Account {account_idx} (Size: {abs(size)}, Side: {side})...")
@@ -1310,7 +1383,10 @@ def fetch_candle_data(symbol, resolution, candle_count):
             if e.code == 429:
                 reset_ms = e.headers.get('X-RATE-LIMIT-RESET')
                 if reset_ms:
-                    reset_sec = float(reset_ms) / 1000.0
+                    try:
+                        reset_sec = float(reset_ms) / 1000.0
+                    except (TypeError, ValueError):
+                        reset_sec = 5.0
                     sleep_dur = min(300.0, reset_sec)
                     print(f"\n{YELLOW}[Rate Limit] Exceeded (HTTP 429). Auto-sleeping for {sleep_dur:.2f}s before retrying...{RESET}")
                     time.sleep(sleep_dur)
@@ -1733,13 +1809,22 @@ def display_all_assets_dashboard(resolution='1d'):
     print()
 
 def get_live_usdt_balance(account_idx=1):
-    """Fetches the available USDT margin balance for the specified account."""
+    """Fetches the available balance (USDT/USD/INR) for the specified account."""
     balances, err = make_authenticated_request("GET", "/v2/wallet/balances", account_idx=account_idx)
     if err or not balances:
         return 0.0
+    preferred = ['USDT', 'USD', 'INR']
+    for asset in preferred:
+        for bal in balances:
+            if bal.get('asset_symbol') == asset:
+                val = float(bal.get('balance', 0.0))
+                if val > 0:
+                    return val
+    # fallback: return any non-zero balance
     for bal in balances:
-        if bal.get('asset_symbol') == 'USDT':
-            return float(bal.get('balance', 0.0))
+        val = float(bal.get('balance', 0.0))
+        if val > 0:
+            return val
     return 0.0
 
 def run_live_monitor(symbols, resolution, poll_interval=15, trade=False, trade_size=1):
@@ -1816,7 +1901,7 @@ def run_live_monitor(symbols, resolution, poll_interval=15, trade=False, trade_s
             
         curr_state = "LONG" if fast_ema[-2] > slow_ema[-2] else "SHORT"
         states[symbol] = curr_state
-        trade_details[symbol] = {'entry_price': 0, 'avg_price': 0, 'pyramid_count': 0, 'highest': 0, 'lowest': 0, 'stop_loss': 0}
+        trade_details[symbol] = {'entry_price': 0, 'avg_price': 0, 'pyramid_count': 0, 'highest': 0, 'lowest': float('inf'), 'stop_loss': 0}
         last_evaluated_candle_time[symbol] = candles[-2]['time']
         print(f"  {symbol}: Tracked. Current state is {GREEN if curr_state=='LONG' else RED}{curr_state}{RESET} (Fast: {fast_ema[-2]:.4f} | Slow: {slow_ema[-2]:.4f})")
         time.sleep(1) # Pacing API requests
@@ -1921,7 +2006,7 @@ def run_live_monitor(symbols, resolution, poll_interval=15, trade=False, trade_s
                             alert_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             alerts.append(f"[{alert_time}] ★ {symbol} crossed over to {new_state} at {closes[-2]:.4f} USD")
                             states[symbol] = new_state
-                            td = trade_details[symbol]
+                            td = trade_details.setdefault(symbol, {'entry_price': 0, 'avg_price': 0, 'pyramid_count': 0, 'highest': 0, 'lowest': float('inf'), 'stop_loss': 0})
                             
                             if trade:
                                 if new_state == "LONG":
@@ -2023,7 +2108,7 @@ def run_live_monitor(symbols, resolution, poll_interval=15, trade=False, trade_s
                         td['pyramid_count'] += 1
 
                 elif states[symbol] == "SHORT":
-                    if td['lowest'] == 0 or latest_close < td['lowest']:
+                    if td['lowest'] == float('inf') or latest_close < td['lowest']:
                         td['lowest'] = latest_close
                         new_sl = latest_close + (curr_atr * 2)
                         if td['stop_loss'] == 0 or new_sl < td['stop_loss']:
@@ -2061,7 +2146,9 @@ def run_live_monitor(symbols, resolution, poll_interval=15, trade=False, trade_s
                 else:
                     pos_color = YELLOW
                     
-                print(f" {symbol:<10} │ {latest_close:<12.4f} │ {f_val:<10.2f} │ {s_val:<10.2f} │ {macro_color}{macro_str:<10}{RESET} │ {curr_atr:<10.4f} │ {pos_color}{states[symbol]:<12}{RESET}")
+                f_disp = f"{f_val:.2f}" if f_val is not None else "-"
+                s_disp = f"{s_val:.2f}" if s_val is not None else "-"
+                print(f" {symbol:<10} │ {latest_close:<12.4f} │ {f_disp:<10} │ {s_disp:<10} │ {macro_color}{macro_str:<10}{RESET} │ {curr_atr:<10.4f} │ {pos_color}{states[symbol]:<12}{RESET}")
                 
                 # Pace API requests by 1 second to prevent rate limiting
                 time.sleep(1)
@@ -2127,16 +2214,20 @@ def interactive_mode():
                 if not err and balances:
                     found = False
                     for bal in balances:
-                        if bal.get('asset_symbol') in ['USDT', 'DET', 'INR']:
-                            cached_balance = f"{float(bal.get('balance', 0)):,.2f} {bal.get('asset_symbol')}"
-                            found = True
-                            break
+                        if bal.get('asset_symbol') in ['USDT', 'USD', 'INR', 'DET']:
+                            bval = float(bal.get('balance', 0))
+                            if bval > 0 or not found:
+                                cached_balance = f"{bval:,.2f} {bal.get('asset_symbol')}"
+                                found = True
+                                if bval > 0:
+                                    break
                     if not found and len(balances) > 0:
                         non_zero = [b for b in balances if float(b.get('balance', 0)) > 0]
                         if non_zero:
                             cached_balance = f"{float(non_zero[0].get('balance', 0)):,.2f} {non_zero[0].get('asset_symbol')}"
                         else:
-                            cached_balance = f"{float(balances[0].get('balance', 0)):,.2f} {balances[0].get('asset_symbol')}"
+                            if balances:
+                                cached_balance = f"{float(balances[0].get('balance', 0)):,.2f} {balances[0].get('asset_symbol')}"
                     cached_balance_time = now
                 elif err:
                     cached_balance = f"Error: {err}"
