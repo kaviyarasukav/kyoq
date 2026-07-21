@@ -1,18 +1,22 @@
 {
   "SOLUSD_1h": {
-    "fast_period": 8,
-    "slow_period": 80,
-    "updated_at": "2026-07-16 18:42:02"
+    "fast_period": 21,
+    "slow_period": 108,
+    "updated_at": "2026-07-21 09:53:08"
   },
   "SOLUSD_30m": {
-    "fast_period": 7,
-    "slow_period": 73,
-    "updated_at": "2026-07-15 18:40:42"
+    "fast_period": 30,
+    "slow_period": 83,
+    "session_name": "EU",
+    "macro_multiplier": 2,
+    "updated_at": "2026-07-21 18:17:56"
   },
   "SOLUSD_1d": {
-    "fast_period": 22,
-    "slow_period": 50,
-    "updated_at": "2026-07-16 12:25:17"
+    "fast_period": 6,
+    "slow_period": 27,
+    "session_name": "ASIA",
+    "macro_multiplier": 4,
+    "updated_at": "2026-07-21 18:08:30"
   },
   "SOLUSD_4h": {
     "fast_period": 22,
@@ -38,5 +42,278 @@
     "fast_period": 7,
     "slow_period": 17,
     "updated_at": "2026-07-16 17:14:47"
+  },
+  "SOLUSD": {
+    "resolution": "30m",
+    "fast_period": 30,
+    "slow_period": 83,
+    "session_name": "EU",
+    "macro_multiplier": 2,
+    "ensemble": [
+      {
+        "resolution": "30m",
+        "fast_period": 30,
+        "slow_period": 83,
+        "session_name": "EU",
+        "macro_multiplier": 2
+      },
+      {
+        "resolution": "30m",
+        "fast_period": 14,
+        "slow_period": 61,
+        "session_name": "ASIA",
+        "macro_multiplier": 3
+      },
+      {
+        "resolution": "30m",
+        "fast_period": 15,
+        "slow_period": 108,
+        "session_name": "EU",
+        "macro_multiplier": 2
+      }
+    ],
+    "updated_at": "2026-07-21 18:17:56"
+  },
+  "XAUTUSD_15m": {
+    "fast_period": 17,
+    "slow_period": 81,
+    "session_name": "EU",
+    "macro_multiplier": 0,
+    "updated_at": "2026-07-21 12:11:03"
+  },
+  "XAUTUSD": {
+    "resolution": "15m",
+    "fast_period": 17,
+    "slow_period": 81,
+    "session_name": "EU",
+    "macro_multiplier": 0,
+    "ensemble": [
+      {
+        "resolution": "15m",
+        "fast_period": 17,
+        "slow_period": 81,
+        "session_name": "EU",
+        "macro_multiplier": 0
+      },
+      {
+        "resolution": "15m",
+        "fast_period": 11,
+        "slow_period": 155,
+        "session_name": "ASIA",
+        "macro_multiplier": 0
+      },
+      {
+        "resolution": "15m",
+        "fast_period": 29,
+        "slow_period": 69,
+        "session_name": "ASIA",
+        "macro_multiplier": 2
+      }
+    ],
+    "updated_at": "2026-07-21 12:11:03"
+  },
+  "XRPUSD_15m": {
+    "fast_period": 18,
+    "slow_period": 148,
+    "session_name": "ASIA",
+    "macro_multiplier": 0,
+    "updated_at": "2026-07-21 12:11:55"
+  },
+  "XRPUSD": {
+    "resolution": "1d",
+    "fast_period": 6,
+    "slow_period": 26,
+    "session_name": "ASIA",
+    "macro_multiplier": 4,
+    "ensemble": [
+      {
+        "resolution": "1d",
+        "fast_period": 6,
+        "slow_period": 26,
+        "session_name": "ASIA",
+        "macro_multiplier": 4
+      },
+      {
+        "resolution": "1d",
+        "fast_period": 7,
+        "slow_period": 24,
+        "session_name": "ASIA",
+        "macro_multiplier": 4
+      },
+      {
+        "resolution": "1d",
+        "fast_period": 7,
+        "slow_period": 27,
+        "session_name": "ASIA",
+        "macro_multiplier": 4
+      }
+    ],
+    "updated_at": "2026-07-21 12:32:00"
+  },
+  "SPYXUSD_1d": {
+    "fast_period": 8,
+    "slow_period": 19,
+    "session_name": "24_7",
+    "macro_multiplier": 2,
+    "updated_at": "2026-07-21 12:17:54"
+  },
+  "SPYXUSD": {
+    "resolution": "1d",
+    "fast_period": 8,
+    "slow_period": 19,
+    "session_name": "24_7",
+    "macro_multiplier": 2,
+    "ensemble": [
+      {
+        "resolution": "1d",
+        "fast_period": 8,
+        "slow_period": 19,
+        "session_name": "24_7",
+        "macro_multiplier": 2
+      },
+      {
+        "resolution": "1d",
+        "fast_period": 7,
+        "slow_period": 20,
+        "session_name": "ASIA",
+        "macro_multiplier": 0
+      },
+      {
+        "resolution": "1d",
+        "fast_period": 10,
+        "slow_period": 26,
+        "session_name": "ASIA",
+        "macro_multiplier": 2
+      }
+    ],
+    "updated_at": "2026-07-21 12:17:54"
+  },
+  "BTCUSD_30m": {
+    "fast_period": 15,
+    "slow_period": 69,
+    "session_name": "ASIA",
+    "macro_multiplier": 0,
+    "updated_at": "2026-07-21 12:22:03"
+  },
+  "BTCUSD": {
+    "resolution": "30m",
+    "fast_period": 15,
+    "slow_period": 69,
+    "session_name": "ASIA",
+    "macro_multiplier": 0,
+    "ensemble": [
+      {
+        "resolution": "30m",
+        "fast_period": 15,
+        "slow_period": 69,
+        "session_name": "ASIA",
+        "macro_multiplier": 0
+      },
+      {
+        "resolution": "30m",
+        "fast_period": 15,
+        "slow_period": 71,
+        "session_name": "ASIA",
+        "macro_multiplier": 0
+      },
+      {
+        "resolution": "30m",
+        "fast_period": 14,
+        "slow_period": 73,
+        "session_name": "ASIA",
+        "macro_multiplier": 0
+      }
+    ],
+    "updated_at": "2026-07-21 12:22:03"
+  },
+  "ETHUSD_5m": {
+    "fast_period": 14,
+    "slow_period": 106,
+    "session_name": "EU",
+    "macro_multiplier": 0,
+    "updated_at": "2026-07-21 12:22:08"
+  },
+  "ETHUSD": {
+    "resolution": "5m",
+    "fast_period": 14,
+    "slow_period": 106,
+    "session_name": "EU",
+    "macro_multiplier": 0,
+    "ensemble": [
+      {
+        "resolution": "5m",
+        "fast_period": 14,
+        "slow_period": 106,
+        "session_name": "EU",
+        "macro_multiplier": 0
+      },
+      {
+        "resolution": "5m",
+        "fast_period": 17,
+        "slow_period": 115,
+        "session_name": "EU",
+        "macro_multiplier": 4
+      },
+      {
+        "resolution": "5m",
+        "fast_period": 18,
+        "slow_period": 117,
+        "session_name": "ASIA",
+        "macro_multiplier": 0
+      }
+    ],
+    "updated_at": "2026-07-21 12:22:08"
+  },
+  "QQQXUSD_4h": {
+    "fast_period": 16,
+    "slow_period": 54,
+    "session_name": "US",
+    "macro_multiplier": 3,
+    "updated_at": "2026-07-21 12:24:40"
+  },
+  "QQQXUSD": {
+    "resolution": "30m",
+    "fast_period": 9,
+    "slow_period": 40,
+    "session_name": "EU",
+    "macro_multiplier": 0,
+    "ensemble": [
+      {
+        "resolution": "30m",
+        "fast_period": 9,
+        "slow_period": 40,
+        "session_name": "EU",
+        "macro_multiplier": 0
+      },
+      {
+        "resolution": "30m",
+        "fast_period": 8,
+        "slow_period": 35,
+        "session_name": "EU",
+        "macro_multiplier": 0
+      },
+      {
+        "resolution": "4h",
+        "fast_period": 8,
+        "slow_period": 36,
+        "session_name": "EU",
+        "macro_multiplier": 3
+      }
+    ],
+    "updated_at": "2026-07-21 12:35:24"
+  },
+  "XRPUSD_1d": {
+    "fast_period": 6,
+    "slow_period": 26,
+    "session_name": "ASIA",
+    "macro_multiplier": 4,
+    "updated_at": "2026-07-21 12:32:00"
+  },
+  "QQQXUSD_30m": {
+    "fast_period": 9,
+    "slow_period": 40,
+    "session_name": "EU",
+    "macro_multiplier": 0,
+    "updated_at": "2026-07-21 12:35:24"
   }
 }
