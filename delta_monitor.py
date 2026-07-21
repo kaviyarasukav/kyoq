@@ -7,6 +7,8 @@ Supports S&P 500, Nasdaq, Gold, Silver, Solana, XRP, and custom symbols.
 """
 
 import sys
+import math
+import statistics
 import os
 import urllib.request
 import urllib.parse
@@ -56,6 +58,13 @@ PRECONFIGURED_ASSETS = {
     '4': {'name': 'Silver (SLVONUSD)', 'symbol': 'SLVONUSD', 'category': 'Commodity'},
     '5': {'name': 'Solana (SOLUSD)', 'symbol': 'SOLUSD', 'category': 'Cryptocurrency'},
     '6': {'name': 'Ripple (XRPUSD)', 'symbol': 'XRPUSD', 'category': 'Cryptocurrency'},
+    '7': {'name': 'Bitcoin (BTCUSD)', 'symbol': 'BTCUSD', 'category': 'Cryptocurrency'},
+    '8': {'name': 'Ethereum (ETHUSD)', 'symbol': 'ETHUSD', 'category': 'Cryptocurrency'},
+    '9': {'name': 'Binance Coin (BNBUSD)', 'symbol': 'BNBUSD', 'category': 'Cryptocurrency'},
+    '10': {'name': 'Dogecoin (DOGEUSD)', 'symbol': 'DOGEUSD', 'category': 'Cryptocurrency'},
+    '11': {'name': 'Pepe (PEPEUSD)', 'symbol': 'PEPEUSD', 'category': 'Cryptocurrency'},
+    '12': {'name': 'Avalanche (AVAXUSD)', 'symbol': 'AVAXUSD', 'category': 'Cryptocurrency'},
+    '13': {'name': 'Sui (SUIUSD)', 'symbol': 'SUIUSD', 'category': 'Cryptocurrency'},
 }
 
 # Resolutions supported by Delta Exchange API
@@ -137,11 +146,13 @@ def start_daemon(args_list):
     # Filter out daemon controls to prevent loops
     cmd = [c for c in cmd if c not in ["--start", "--stop", "--status"]]
     
-    # Parent writes spawn notice to log file before spawning
+    # Open log file to redirect output
+    log_file_handle = subprocess.DEVNULL
     try:
-        with open("bot.log", "a", encoding="utf-8") as log_file:
-            log_file.write(f"\n--- Spawning background bot process at {datetime.now()} ---\n")
-            log_file.write(f"Command: {cmd}\n")
+        log_file_handle = open("bot.log", "a", encoding="utf-8")
+        log_file_handle.write(f"\n--- Spawning background bot process at {datetime.now()} ---\n")
+        log_file_handle.write(f"Command: {cmd}\n")
+        log_file_handle.flush()
     except Exception:
         pass
         
@@ -155,8 +166,7 @@ def start_daemon(args_list):
         stderr=subprocess.DEVNULL,
         stdin=subprocess.DEVNULL,
         creationflags=creationflags,
-        close_fds=True if os.name != 'nt' else False,
-        start_new_session=True if os.name != 'nt' else False,
+        close_fds=True,
         cwd=os.path.dirname(script_path)
     )
     
@@ -248,7 +258,42 @@ def load_optimized_settings():
             print(f"Error loading optimized settings: {e}")
     return {}
 
-def save_optimized_settings(symbol, resolution, fast_period, slow_period):
+
+def print_finalized_report(symbol, best_res, best_fast, best_slow, best_session, best_macro, best_tp, best_sl, best_pyr, tr_p, tr_dd, tr_tr, tr_wr, tr_pf, tr_sharpe, te_p, te_dd, te_tr, te_wr, te_pf, te_sharpe, twin_sym, twin_p, twin_dd):
+    print("\n" + BOLD + CYAN + "╔" + "═"*78 + "╗" + RESET)
+    print(BOLD + CYAN + "║" + " FINALIZED STRATEGY REPORT ".center(78) + "║" + RESET)
+    print(BOLD + CYAN + "╠" + "═"*78 + "╣" + RESET)
+    print(BOLD + CYAN + f"║ Asset: {symbol:<15} Timeframe: {best_res:<10} Session: {best_session:<21} ║" + RESET)
+    print(BOLD + CYAN + "╠" + "═"*78 + "╣" + RESET)
+    print(BOLD + CYAN + "║" + " STRATEGY DNA (HYPERPARAMETERS) ".center(78) + "║" + RESET)
+    print(BOLD + CYAN + "╟" + "─"*78 + "╢" + RESET)
+    print(BOLD + CYAN + f"║ Fast EMA: {best_fast:<13} Slow EMA: {best_slow:<13} Macro Trend Filter: {best_macro}x      ║" + RESET)
+    print(BOLD + CYAN + f"║ Take Profit (ATR): {best_tp:<4} Stop Loss (ATR): {best_sl:<4} Max Pyramiding Layers: {best_pyr:<2}  ║" + RESET)
+    print(BOLD + CYAN + "╠" + "═"*78 + "╣" + RESET)
+    print(BOLD + CYAN + "║" + " PERFORMANCE METRICS (IN-SAMPLE) ".center(78) + "║" + RESET)
+    print(BOLD + CYAN + "╟" + "─"*78 + "╢" + RESET)
+    print(BOLD + CYAN + f"║ Net Return: {tr_p:+.2f}%".ljust(41) + f"Max Drawdown: {tr_dd:.2f}%".ljust(39) + "║" + RESET)
+    print(BOLD + CYAN + f"║ Win Rate:   {tr_wr*100:.1f}%".ljust(41) + f"Profit Factor: {tr_pf:.2f}".ljust(39) + "║" + RESET)
+    print(BOLD + CYAN + f"║ Total Trades: {tr_tr}".ljust(41) + f"Sharpe Ratio:  {tr_sharpe:.2f}".ljust(39) + "║" + RESET)
+    print(BOLD + CYAN + "╠" + "═"*78 + "╣" + RESET)
+    print(BOLD + CYAN + "║" + " PERFORMANCE METRICS (OUT-OF-SAMPLE) ".center(78) + "║" + RESET)
+    print(BOLD + CYAN + "╟" + "─"*78 + "╢" + RESET)
+    
+    oos_color = GREEN if te_p > 0 else RED
+    print(BOLD + oos_color + f"║ Net Return: {te_p:+.2f}%".ljust(41 + len(BOLD+oos_color)) + f"Max Drawdown: {te_dd:.2f}%".ljust(39) + "║" + RESET)
+    print(BOLD + oos_color + f"║ Win Rate:   {te_wr*100:.1f}%".ljust(41 + len(BOLD+oos_color)) + f"Profit Factor: {te_pf:.2f}".ljust(39) + "║" + RESET)
+    print(BOLD + oos_color + f"║ Total Trades: {te_tr}".ljust(41 + len(BOLD+oos_color)) + f"Sharpe Ratio:  {te_sharpe:.2f}".ljust(39) + "║" + RESET)
+    print(BOLD + CYAN + "╠" + "═"*78 + "╣" + RESET)
+    print(BOLD + CYAN + "║" + " CROSS-ASSET VALIDATION ".center(78) + "║" + RESET)
+    print(BOLD + CYAN + "╟" + "─"*78 + "╢" + RESET)
+    if twin_sym:
+        val_color = GREEN if twin_p > 0 else RED
+        print(BOLD + val_color + f"║ Validated on: {twin_sym:<10} Return: {twin_p:+.2f}%   Drawdown: {twin_dd:.2f}%".ljust(79 + len(BOLD+val_color)) + "║" + RESET)
+    else:
+        print(BOLD + YELLOW + f"║ No correlated twin asset available for cross-validation.".ljust(87) + "║" + RESET)
+    print(BOLD + CYAN + "╚" + "═"*78 + "╝\\n" + RESET)
+
+def save_optimized_settings(symbol, resolution, fast_period, slow_period, session_name='24_7', macro_multiplier=4, ensemble=None, tp_mult=0.0, sl_mult=2.0, pyramid_max=3):
     """Saves optimized settings for a symbol and resolution to optimized_settings.json."""
     settings_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "optimized_settings.json")
     settings = load_optimized_settings()
@@ -257,6 +302,37 @@ def save_optimized_settings(symbol, resolution, fast_period, slow_period):
     settings[key] = {
         "fast_period": fast_period,
         "slow_period": slow_period,
+        "session_name": session_name,
+        "macro_multiplier": macro_multiplier,
+        "take_profit_mult": tp_mult,
+        "stop_loss_mult": sl_mult,
+        "pyramiding_max": pyramid_max,
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
+    
+    # Also save a symbol-level fallback entry representing the absolute best settings found and the ensemble
+    key_symbol = symbol
+    settings[key_symbol] = {
+        "resolution": resolution,
+        "fast_period": fast_period,
+        "slow_period": slow_period,
+        "session_name": session_name,
+        "macro_multiplier": macro_multiplier,
+        "take_profit_mult": tp_mult,
+        "stop_loss_mult": sl_mult,
+        "pyramiding_max": pyramid_max,
+        "ensemble": ensemble or [
+            {
+                "resolution": resolution,
+                "fast_period": fast_period,
+                "slow_period": slow_period,
+                "session_name": session_name,
+                "macro_multiplier": macro_multiplier,
+        "take_profit_mult": tp_mult,
+        "stop_loss_mult": sl_mult,
+        "pyramiding_max": pyramid_max
+            }
+        ],
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
     
@@ -267,32 +343,34 @@ def save_optimized_settings(symbol, resolution, fast_period, slow_period):
     except Exception as e:
         print(f"{RED}Error saving optimized settings: {e}{RESET}")
 
-def backtest_ema_crossover(candles, fast_period, slow_period, start_eval_idx=None, end_eval_idx=None):
+def backtest_ema_crossover(candles, fast_period, slow_period, tp_mult=0.0, sl_mult=2.0, pyramid_max=3, start_eval_idx=None, end_eval_idx=None, session_name='24_7', macro_multiplier=4):
     """
-    Simulates Advanced Trend Following with:
-    1. MTF Trend Filtering (Macro EMA)
-    2. Fractional Kelly / Compounding Sizing
-    3. Pyramiding (Scale-in on ATR moves)
-    4. ATR Trailing Stops
-    Supports warm up on historical data before evaluating strategy metrics.
+    Simulates Advanced Trend Following with GA-tunable variables:
+    - MTF Trend Filtering (Macro EMA)
+    - ATR Trailing Stops (sl_mult)
+    - Take Profit targets (tp_mult)
+    - Pyramiding (pyramid_max)
     """
-    if len(candles) < (slow_period * 4) + 5:
+    if len(candles) < slow_period + 5:
         return 0.0, 100.0, 0, 0.0, 0.0
         
     closes = [c['close'] for c in candles]
     fast_ema = calculate_ema(closes, fast_period)
     slow_ema = calculate_ema(closes, slow_period)
-    macro_ema = calculate_ema(closes, slow_period * 4)  # MTF Filter
+    if macro_multiplier > 0:
+        macro_ema = calculate_ema(closes, slow_period * macro_multiplier)
+    else:
+        macro_ema = [None] * len(closes)
     atr = calculate_atr(candles, 14)
     
-    if len(fast_ema) < len(closes) or fast_ema[-1] is None or macro_ema[-1] is None:
+    if len(fast_ema) < len(closes) or fast_ema[-1] is None or slow_ema[-1] is None:
         return 0.0, 100.0, 0, 0.0, 0.0
         
     initial_equity = 10000.0
     equity = initial_equity
     equity_curve = [equity]
     
-    warmup_idx = slow_period * 4
+    warmup_idx = slow_period
     if start_eval_idx is None:
         start_eval_idx = warmup_idx
     else:
@@ -313,13 +391,13 @@ def backtest_ema_crossover(candles, fast_period, slow_period, start_eval_idx=Non
     # State tracking
     entry_price = 0.0
     stop_loss = 0.0
+    take_profit = 0.0
     highest_price = 0.0
     lowest_price = 0.0
     pyramid_count = 0
     avg_price = 0.0
     
-    # Fractional Kelly Approximation (Fixed compounding risk)
-    base_risk = 0.02 # 2% per trade, compounds with equity
+    base_risk = 0.02
     position_size_dollars = 0.0
     
     for i in range(warmup_idx, end_eval_idx):
@@ -331,33 +409,29 @@ def backtest_ema_crossover(candles, fast_period, slow_period, start_eval_idx=Non
         curr_macro = macro_ema[i]
         curr_atr = atr[i]
         
-        if curr_fast is None or curr_macro is None or curr_atr == 0:
+        if curr_fast is None or curr_slow is None or curr_atr == 0:
             continue
             
-        # 1. Update Equity & Trailing Stops if in a position
         if position == 1:
             if i >= start_eval_idx:
-                # Mark to market equity update
                 bar_return = (curr_close - prev_close) / prev_close
                 equity += position_size_dollars * bar_return
             
-            # Trailing stop update
             if curr_close > highest_price:
                 highest_price = curr_close
-                new_stop = highest_price - (curr_atr * 2)
+                new_stop = highest_price - (curr_atr * sl_mult)
                 if new_stop > stop_loss:
                     stop_loss = new_stop
                     
-            # Pyramiding (Scale In)
-            if curr_close > avg_price + (curr_atr * 1.5) and pyramid_count < 3:
+            if curr_close > avg_price + (curr_atr * 1.5) and pyramid_count < pyramid_max:
                 pyramid_count += 1
                 if i >= start_eval_idx:
-                    add_size = equity * (base_risk / 2) # Add half-size
-                    position_size_dollars += add_size
-                avg_price = (avg_price + curr_close) / 2 # simplified avg price
+                    position_size_dollars += equity * (base_risk / 2)
+                avg_price = (avg_price + curr_close) / 2
+                if tp_mult > 0:
+                    take_profit = avg_price + (curr_atr * tp_mult)
                 
-            # Exit Conditions (Stop Loss or Trend Reversal)
-            if curr_close <= stop_loss or curr_fast < curr_slow:
+            if curr_close <= stop_loss or (tp_mult > 0 and curr_close >= take_profit) or curr_fast < curr_slow:
                 if i >= start_eval_idx:
                     trade_return = (curr_close - entry_price) / entry_price
                     trade_returns.append(trade_return)
@@ -371,58 +445,70 @@ def backtest_ema_crossover(candles, fast_period, slow_period, start_eval_idx=Non
             
             if curr_close < lowest_price:
                 lowest_price = curr_close
-                new_stop = lowest_price + (curr_atr * 2)
+                new_stop = lowest_price + (curr_atr * sl_mult)
                 if new_stop < stop_loss:
                     stop_loss = new_stop
                     
-            if curr_close < avg_price - (curr_atr * 1.5) and pyramid_count < 3:
+            if curr_close < avg_price - (curr_atr * 1.5) and pyramid_count < pyramid_max:
                 pyramid_count += 1
                 if i >= start_eval_idx:
-                    add_size = equity * (base_risk / 2)
-                    position_size_dollars += add_size
+                    position_size_dollars += equity * (base_risk / 2)
                 avg_price = (avg_price + curr_close) / 2
+                if tp_mult > 0:
+                    take_profit = avg_price - (curr_atr * tp_mult)
                 
-            if curr_close >= stop_loss or curr_fast > curr_slow:
+            if curr_close >= stop_loss or (tp_mult > 0 and curr_close <= take_profit) or curr_fast > curr_slow:
                 if i >= start_eval_idx:
                     trade_return = (entry_price - curr_close) / entry_price
                     trade_returns.append(trade_return)
                     trades_count += 1
                 position = 0
                 
-        # 2. Entry Conditions (MTF Filtered)
         if position == 0:
             if i >= start_eval_idx:
-                equity_curve.append(equity) # Only snapshot equity on flat to speed up calculation
+                equity_curve.append(equity)
             
-            # LONG ENTRY
-            if curr_fast > curr_slow and curr_close > curr_macro:
-                position = 1
-                entry_price = curr_close
-                avg_price = curr_close
-                highest_price = curr_close
-                stop_loss = entry_price - (curr_atr * 2)
-                if i >= start_eval_idx:
-                    position_size_dollars = equity * base_risk * 10 # 10x leverage equivalent based on risk
-                else:
-                    position_size_dollars = 0.0
-                pyramid_count = 0
-                
-            # SHORT ENTRY
-            elif curr_fast < curr_slow and curr_close < curr_macro:
-                position = -1
-                entry_price = curr_close
-                avg_price = curr_close
-                lowest_price = curr_close
-                stop_loss = entry_price + (curr_atr * 2)
-                if i >= start_eval_idx:
-                    position_size_dollars = equity * base_risk * 10
-                else:
-                    position_size_dollars = 0.0
-                pyramid_count = 0
+            is_valid_time = True
+            if session_name != '24_7':
+                curr_min = (int(candles[i]['time']) // 60) % 1440
+                if session_name == 'US':
+                    is_valid_time = 810 <= curr_min <= 1200
+                elif session_name == 'EU':
+                    is_valid_time = 420 <= curr_min <= 930
+                elif session_name == 'ASIA':
+                    is_valid_time = 0 <= curr_min <= 510
+                    
+            if is_valid_time:
+                if curr_fast > curr_slow and (curr_macro is None or curr_close > curr_macro):
+                    position = 1
+                    entry_price = curr_close
+                    avg_price = curr_close
+                    highest_price = curr_close
+                    stop_loss = entry_price - (curr_atr * sl_mult)
+                    if tp_mult > 0:
+                        take_profit = entry_price + (curr_atr * tp_mult)
+                    if i >= start_eval_idx:
+                        position_size_dollars = equity * base_risk * 10
+                    else:
+                        position_size_dollars = 0.0
+                    pyramid_count = 0
+                    
+                elif curr_fast < curr_slow and (curr_macro is None or curr_close < curr_macro):
+                    position = -1
+                    entry_price = curr_close
+                    avg_price = curr_close
+                    lowest_price = curr_close
+                    stop_loss = entry_price + (curr_atr * sl_mult)
+                    if tp_mult > 0:
+                        take_profit = entry_price - (curr_atr * tp_mult)
+                    if i >= start_eval_idx:
+                        position_size_dollars = equity * base_risk * 10
+                    else:
+                        position_size_dollars = 0.0
+                    pyramid_count = 0
                 
     net_profit_pct = ((equity - initial_equity) / initial_equity) * 100.0
     
-    # Fast Drawdown Calculation
     peak = initial_equity
     max_dd = 0.0
     for eq in equity_curve:
@@ -439,7 +525,17 @@ def backtest_ema_crossover(candles, fast_period, slow_period, start_eval_idx=Non
     sum_losses = abs(sum(losses))
     profit_factor = sum_wins / sum_losses if sum_losses > 0 else (sum_wins if sum_wins > 0 else 1.0)
     
-    return net_profit_pct, max_dd, trades_count, win_rate, profit_factor
+    
+    sharpe_ratio = 0.0
+    if len(trade_returns) > 1:
+        stdev = statistics.stdev(trade_returns)
+        if stdev > 0:
+            mean_return = sum(trade_returns) / len(trade_returns)
+            # Annualized approximation (trade based)
+            sharpe_ratio = (mean_return / stdev) * math.sqrt(len(trade_returns))
+    
+    return net_profit_pct, max_dd, trades_count, win_rate, profit_factor, sharpe_ratio
+
 
 def get_backtest_candle_count(resolution):
     """Dynamically scale historical candle count to prevent curve-fitting."""
@@ -453,9 +549,9 @@ def get_backtest_candle_count(resolution):
     elif res_lower in ['4h']:
         return 2000
     elif res_lower in ['1d']:
-        return 500
+        return 1500
     elif res_lower in ['1w']:
-        return 150
+        return 500
     else:
         return 2000
 
@@ -477,53 +573,117 @@ def get_ema_ranges(resolution):
 
 def run_genetic_optimization(symbol, resolution, generations=15, pop_size=50, elites_count=5, mutation_rate=0.25):
     """
-    Runs a Genetic Algorithm on historical candle data to find optimal EMA crossover parameters.
+    Runs an upgraded Genetic Algorithm to optimize EMA periods, timeframes, and sessions.
+    Supports fallback retries with lower timeframes if validation fails.
     """
-    print(BOLD + CYAN + f"\n=== Starting Genetic Strategy Optimization for {symbol} ({resolution}) ===" + RESET)
+    print(BOLD + CYAN + f"\n=== Starting Multi-Parameter Strategy Optimization (GA V3) for {symbol} ===" + RESET)
     
-    count = get_backtest_candle_count(resolution)
-    print(f"Fetching historical candles for backtesting (Count: {count})...")
-    candles, err = fetch_candle_data(symbol, resolution, count)
-    if err or not candles or len(candles) < 40:
-        print(f"{RED}Error fetching enough historical data: {err or 'insufficient candles'}{RESET}")
-        return
+    resolutions = ['5m', '15m', '30m', '1h', '4h', '1d']
+    candles_by_res = {}
+    
+    print("Pre-fetching historical candles for all resolutions to avoid rate limits...")
+    for res in resolutions:
+        count = get_backtest_candle_count(res)
+        print(f"  Fetching {res} (Count: {count})...")
+        candles, err = fetch_candle_data(symbol, res, count)
+        if not err and candles and len(candles) >= 40:
+            candles_by_res[res] = candles
+            print(f"    Loaded {len(candles)} candles.")
+        else:
+            print(f"    {YELLOW}Skip {res}: insufficient data ({err or 'empty'}){RESET}")
+            
+    if not candles_by_res:
+        print(f"{RED}Error: Failed to fetch historical data for any timeframe resolution.{RESET}")
+        return False
         
-    print(f"Loaded {len(candles)} historical candles.")
-    run_genetic_optimization_with_params(symbol, resolution, candles, generations, pop_size, elites_count, mutation_rate)
+    # Start optimization with the requested resolution
+    success = run_genetic_optimization_with_params(symbol, resolution, candles_by_res, generations, pop_size, elites_count, mutation_rate)
+    
+    if success:
+        return True
+        
+    # Fallback retry loop downscaling the resolution to increase trade count / test sample size
+    fallback_sequence = ['1d', '4h', '1h', '30m', '15m', '5m']
+    if resolution in fallback_sequence:
+        start_idx = fallback_sequence.index(resolution)
+        # Try resolutions that are strictly lower/faster than the requested resolution
+        for fallback_res in fallback_sequence[start_idx + 1:]:
+            if fallback_res not in candles_by_res:
+                continue
+            print(BOLD + YELLOW + f"\n[OOS Failure Fallback] Retrying optimization for {symbol} with lower timeframe: {fallback_res} to increase sample size... {RESET}")
+            success = run_genetic_optimization_with_params(symbol, fallback_res, candles_by_res, generations, pop_size, elites_count, mutation_rate)
+            if success:
+                print(BOLD + GREEN + f"[OOS Failure Fallback] Optimization succeeded on fallback resolution {fallback_res}!" + RESET)
+                return True
+                
+    print(BOLD + RED + f"\n[Optimization Failure] All fallback resolutions failed Out-of-Sample validation for {symbol}." + RESET)
+    return False
 
-def run_genetic_optimization_inner(candles, resolution, generations, pop_size, elites_count, mutation_rate):
+def run_genetic_optimization_inner(candles, resolution, generations, pop_size, elites_count, mutation_rate, tourn_size=3, mutation_scale=2, crossover_prob=0.7, fitness_dd_weight=0.5):
     """
-    Inner GA worker function that backtests strategies without API calls.
-    Now implements Out-of-Sample (OOS) 70/30 Holdout Validation.
+    Inner GA worker function used by Meta-GA to evaluate hyperparameters.
+    Uses 70/30 OOS holdout. Returns (best_chrom, blended_profit, blended_dd, blended_trades)
+    where best_chrom = (fast, slow, res, session, macro_mult).
     """
-    split_idx = int(len(candles) * 0.7)
-    
+
+    AVAILABLE_SESSIONS = ['24_7', 'US', 'EU', 'ASIA']
+    AVAILABLE_MULTIPLIERS = [0, 2, 3, 4]
+    AVAILABLE_TP_MULTS = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
+    AVAILABLE_SL_MULTS = [1.0, 2.0, 3.0, 4.0, 5.0]
+    AVAILABLE_PYRAMIDS = [1, 2, 3, 4, 5]
+
+    # Build a single-resolution candles_by_res dict so the same crossover/mutation
+    # logic used in run_genetic_optimization_with_params works here too.
+    candles_by_res = {resolution: candles}
+
     fast_range, slow_range = get_ema_ranges(resolution)
-    
+
+    # Calculate max unique configs (fast × slow × session × macro)
+    max_ema_pairs = sum(
+        1 for f in range(fast_range[0], fast_range[1] + 1)
+        for s in range(max(slow_range[0], f + 10), slow_range[1] + 1)
+    )
+    max_possible = max_ema_pairs * len(AVAILABLE_SESSIONS) * len(AVAILABLE_MULTIPLIERS) * len(AVAILABLE_TP_MULTS) * len(AVAILABLE_SL_MULTS) * len(AVAILABLE_PYRAMIDS)
+    eff_pop_size = min(pop_size, max(10, max_possible))
+
     population = []
-    while len(population) < pop_size:
+    seen = set()
+    attempts = 0
+    while len(population) < eff_pop_size and attempts < eff_pop_size * 20:
+        attempts += 1
         fast = random.randint(fast_range[0], fast_range[1])
         slow = random.randint(max(slow_range[0], fast + 10), slow_range[1])
-        population.append((fast, slow))
-        
+        session = random.choice(AVAILABLE_SESSIONS)
+        macro_mult = random.choice(AVAILABLE_MULTIPLIERS)
+        tp = random.choice(AVAILABLE_TP_MULTS)
+        sl = random.choice(AVAILABLE_SL_MULTS)
+        pyr = random.choice(AVAILABLE_PYRAMIDS)
+        chromosome = (fast, slow, resolution, session, macro_mult, tp, sl, pyr)
+        if chromosome not in seen:
+            seen.add(chromosome)
+            population.append(chromosome)
+
     best_global_fit = -9999.0
     stagnant_gens = 0
-    tourn_size = max(3, pop_size // 10)
-    
-    # --- In-Sample Evolution (Training) ---
+    tourn_size = max(2, min(tourn_size, eff_pop_size // 2))
+
     for gen in range(1, generations + 1):
         scored_pop = []
-        for fast, slow in population:
-            profit, max_dd, trades, win_rate, profit_factor = backtest_ema_crossover(candles, fast, slow, end_eval_idx=split_idx)
-            # Sharpe-like expectancy fitness formula
-            fitness = profit * (1.0 + win_rate) * min(3.0, profit_factor) - (max_dd * 0.75)
-            if trades < 10: # Lowered to 10 because it's only 70% of the data
+        for fast, slow, res, session, macro_mult, tp_mult, sl_mult, pyramid_max in population:
+            c = candles_by_res.get(res, candles)
+            split_idx_train = int(len(c) * 0.6)
+            profit, max_dd, trades, win_rate, profit_factor, sharpe = backtest_ema_crossover(
+                c, fast, slow, tp_mult=tp_mult, sl_mult=sl_mult, pyramid_max=pyramid_max, end_eval_idx=split_idx_train, session_name=session, macro_multiplier=macro_mult
+            )
+            calmar = profit / max_dd if max_dd > 0 else profit
+            fitness = (sharpe * 2.0) + calmar + (profit_factor * win_rate * math.log1p(trades))
+            if trades < 5:
                 fitness -= 200.0
-            scored_pop.append((fitness, (fast, slow), profit, max_dd, trades))
-            
+            scored_pop.append((fitness, (fast, slow, res, session, macro_mult, tp_mult, sl_mult, pyramid_max), profit, max_dd, trades))
+
         scored_pop.sort(key=lambda x: x[0], reverse=True)
         best_fit = scored_pop[0][0]
-        
+
         if best_fit > best_global_fit + 0.01:
             best_global_fit = best_fit
             stagnant_gens = 0
@@ -531,101 +691,197 @@ def run_genetic_optimization_inner(candles, resolution, generations, pop_size, e
             stagnant_gens += 1
             if stagnant_gens >= 5 and gen > generations // 2:
                 break
-        
-        # Next generation
-        next_pop = [pair for fit, pair, p, dd, tr in scored_pop[:elites_count]]
+
+        # Elitism
+        next_pop = []
+        seen = set()
+        for fit, chromosome, p, dd, tr in scored_pop:
+            if chromosome not in seen:
+                seen.add(chromosome)
+                next_pop.append(chromosome)
+                if len(next_pop) >= elites_count:
+                    break
+
         current_mut_rate = mutation_rate * (1.0 - (gen / generations) * 0.5)
-        
-        while len(next_pop) < pop_size:
-            parents = []
-            for _ in range(2):
-                candidates = random.sample(scored_pop, tourn_size)
-                candidates.sort(key=lambda x: x[0], reverse=True)
-                parents.append(candidates[0][1])
-                
-            p1, p2 = parents[0], parents[1]
-            
-            # Blend Crossover
-            child_fast = int((p1[0] + p2[0]) / 2) + random.choice([-1, 0, 1])
-            child_slow = int((p1[1] + p2[1]) / 2) + random.choice([-2, 0, 2])
-            
-            if child_slow < child_fast + 10:
-                child_slow = child_fast + 10
-                
+
+        # Crossover + mutation to fill next generation
+        while len(next_pop) < eff_pop_size:
+            candidates1 = random.sample(scored_pop, min(tourn_size, len(scored_pop)))
+            candidates2 = random.sample(scored_pop, min(tourn_size, len(scored_pop)))
+            p1 = max(candidates1, key=lambda x: x[0])[1]
+            p2 = max(candidates2, key=lambda x: x[0])[1]
+
+            if random.random() < crossover_prob:
+                child_res = random.choice([p1[2], p2[2]])
+                child_session = random.choice([p1[3], p2[3]])
+                child_macro = random.choice([p1[4], p2[4]])
+                child_tp = random.choice([p1[5], p2[5]])
+                child_sl = random.choice([p1[6], p2[6]])
+                child_pyr = random.choice([p1[7], p2[7]])
+                fr, sr = get_ema_ranges(child_res)
+                child_fast = max(fr[0], min(fr[1], int((p1[0] + p2[0]) / 2) + random.randint(-max(1, mutation_scale // 2), max(1, mutation_scale // 2))))
+                child_slow = max(max(sr[0], child_fast + 10), min(sr[1], int((p1[1] + p2[1]) / 2) + random.randint(-mutation_scale, mutation_scale)))
+            else:
+                child_res = p1[2]
+                child_session = p1[3]
+                child_macro = p1[4]
+                child_tp = p1[5]
+                child_sl = p1[6]
+                child_pyr = p1[7]
+                child_fast = p1[0]
+                child_slow = p1[1]
+                fr, sr = get_ema_ranges(child_res)
+
             if random.random() < current_mut_rate:
-                child_fast += random.choice([-2, -1, 1, 2])
-                
+                child_res = random.choice(list(candles_by_res.keys()))
+                fr, sr = get_ema_ranges(child_res)
             if random.random() < current_mut_rate:
-                child_slow += random.choice([-5, -2, 2, 5])
-                
-            child_fast = max(fast_range[0], min(fast_range[1], child_fast))
-            child_slow = max(max(slow_range[0], child_fast + 10), min(slow_range[1], child_slow))
-            next_pop.append((child_fast, child_slow))
-            
+                child_session = random.choice(AVAILABLE_SESSIONS)
+            if random.random() < current_mut_rate:
+                child_macro = random.choice(AVAILABLE_MULTIPLIERS)
+            if random.random() < current_mut_rate:
+                child_tp = random.choice(AVAILABLE_TP_MULTS)
+            if random.random() < current_mut_rate:
+                child_sl = random.choice(AVAILABLE_SL_MULTS)
+            if random.random() < current_mut_rate:
+                child_pyr = random.choice(AVAILABLE_PYRAMIDS)
+            if random.random() < current_mut_rate:
+                child_fast = max(fr[0], min(fr[1], child_fast + random.randint(-mutation_scale, mutation_scale)))
+            if random.random() < current_mut_rate:
+                child_slow = max(max(slow_range[0], child_fast + 10), min(slow_range[1], child_slow + random.randint(-mutation_scale * 2, mutation_scale * 2)))
+
+            chromosome = (child_fast, child_slow, child_res, child_session, child_macro, child_tp, child_sl, child_pyr)
+            if chromosome not in seen:
+                seen.add(chromosome)
+                next_pop.append(chromosome)
+            else:
+                # Attempt escape mutation
+                added = False
+                for _ in range(20):
+                    m_fast = max(fr[0], min(fr[1], child_fast + random.randint(-mutation_scale - 1, mutation_scale + 1)))
+                    m_slow = max(max(sr[0], m_fast + 10), min(sr[1], child_slow + random.randint(-mutation_scale * 2 - 1, mutation_scale * 2 + 1)))
+                    m_res = random.choice(list(candles_by_res.keys())) if random.random() < 0.3 else child_res
+                    m_session = random.choice(AVAILABLE_SESSIONS) if random.random() < 0.3 else child_session
+                    m_macro = random.choice(AVAILABLE_MULTIPLIERS) if random.random() < 0.3 else child_macro
+                    m_tp = random.choice(AVAILABLE_TP_MULTS) if random.random() < 0.3 else child_tp
+                    m_sl = random.choice(AVAILABLE_SL_MULTS) if random.random() < 0.3 else child_sl
+                    m_pyr = random.choice(AVAILABLE_PYRAMIDS) if random.random() < 0.3 else child_pyr
+                    m_chrom = (m_fast, m_slow, m_res, m_session, m_macro, m_tp, m_sl, m_pyr)
+                    if m_chrom not in seen:
+                        seen.add(m_chrom)
+                        next_pop.append(m_chrom)
+                        added = True
+                        break
+                if not added:
+                    next_pop.append(chromosome)  # allow duplicate rather than infinite loop
+
         population = next_pop
-        
-    # --- Out-of-Sample Validation (Testing) ---
+
+    # Validation & OOS Scoring (True Holdout)
     final_scored = []
-    for fast, slow in population:
-        tr_p, tr_dd, tr_tr, tr_wr, tr_pf = backtest_ema_crossover(candles, fast, slow, end_eval_idx=split_idx)
-        train_fitness = tr_p * (1.0 + tr_wr) * min(3.0, tr_pf) - (tr_dd * 0.75)
+    for fast, slow, res, session, macro_mult, tp_mult, sl_mult, pyramid_max in population:
+        c = candles_by_res.get(res, candles)
+        split_idx_train = int(len(c) * 0.70)
+
+        # Train on 70%
+        tr_p, tr_dd, tr_tr, tr_wr, tr_pf, tr_sharpe = backtest_ema_crossover(
+            c, fast, slow, tp_mult=tp_mult, sl_mult=sl_mult, pyramid_max=pyramid_max, end_eval_idx=split_idx_train, session_name=session, macro_multiplier=macro_mult
+        )
+        tr_calmar = tr_p / tr_dd if tr_dd > 0 else tr_p
+        train_fitness = (tr_sharpe * 2.0) + tr_calmar + (tr_pf * tr_wr * math.log1p(tr_tr))
         if tr_tr < 10:
             train_fitness -= 200.0
-            
-        te_p, te_dd, te_tr, te_wr, te_pf = backtest_ema_crossover(candles, fast, slow, start_eval_idx=split_idx)
-        test_fitness = te_p * (1.0 + te_wr) * min(3.0, te_pf) - (te_dd * 0.75)
-        
-        # Penalize if OOS performance crashes (curve-fitting detection)
-        if te_p <= 0 or test_fitness < (train_fitness * 0.2):
-            final_fit = train_fitness - 1000.0 
-        else:
-            final_fit = (train_fitness * 0.6) + (test_fitness * 0.4)
-            
-        final_scored.append((final_fit, (fast, slow), tr_p, tr_dd, tr_tr, te_p, te_dd, te_tr))
-        
-    final_scored.sort(key=lambda x: x[0], reverse=True)
-    best_fitness, (best_fast, best_slow), tr_p, tr_dd, tr_tr, te_p, te_dd, te_tr = final_scored[0]
-    
-    # Return blended metrics for the overall fitness perspective
-    blended_profit = (tr_p * 0.7) + (te_p * 0.3)
-    blended_dd = max(tr_dd, te_dd)
-    blended_trades = tr_tr + te_tr
-    return best_fast, best_slow, blended_profit, blended_dd, blended_trades
 
-def run_genetic_optimization_with_params(symbol, resolution, candles, generations, pop_size, elites_count, mutation_rate):
+        # Out-of-Sample Holdout (30%)
+        te_p, te_dd, te_tr, te_wr, te_pf, te_sharpe = backtest_ema_crossover(
+            c, fast, slow, tp_mult=tp_mult, sl_mult=sl_mult, pyramid_max=pyramid_max, start_eval_idx=split_idx_train, session_name=session, macro_multiplier=macro_mult
+        )
+
+        final_scored.append((train_fitness, (fast, slow, res, session, macro_mult, tp_mult, sl_mult, pyramid_max), tr_p, tr_dd, tr_tr, tr_wr, tr_pf, tr_sharpe, te_p, te_dd, te_tr, te_wr, te_pf, te_sharpe))
+
+    final_scored.sort(key=lambda x: x[0], reverse=True)
+    best_fitness, best_chrom, tr_p, tr_dd, tr_tr, tr_wr, tr_pf, tr_sharpe, te_p, te_dd, te_tr, te_wr, te_pf, te_sharpe = final_scored[0]
+
+    # Return test metrics to prioritize out-of-sample robustness
+    return best_chrom, te_p, te_dd, te_tr
+
+def run_genetic_optimization_with_params(symbol, resolution, candles_input, generations, pop_size, elites_count, mutation_rate, tourn_size=3, mutation_scale=2, crossover_prob=0.7, fitness_dd_weight=0.5):
     """
     Runs final strategy optimization with custom parameters and saves settings.
     Now uses 70/30 Out-of-Sample Holdout testing to prove edge.
     """
-    split_idx = int(len(candles) * 0.7)
-    train_count = split_idx
-
-    fast_range, slow_range = get_ema_ranges(resolution)
-
+    import math
+    if isinstance(candles_input, dict):
+        candles_by_res = candles_input
+    else:
+        candles_by_res = {resolution: candles_input}
+        
+    AVAILABLE_SESSIONS = ['24_7', 'US', 'EU', 'ASIA']
+    AVAILABLE_MULTIPLIERS = [0, 2, 3, 4]
+    AVAILABLE_TP_MULTS = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
+    AVAILABLE_SL_MULTS = [1.0, 2.0, 3.0, 4.0, 5.0]
+    AVAILABLE_PYRAMIDS = [1, 2, 3, 4, 5]
+    
+    # Calculate maximum possible unique configurations
+    max_possible = 0
+    for res in candles_by_res.keys():
+        fast_range, slow_range = get_ema_ranges(res)
+        for f in range(fast_range[0], fast_range[1] + 1):
+            for s in range(max(slow_range[0], f + 10), slow_range[1] + 1):
+                max_possible += 16 * 6 * 5 * 5
+                
+    eff_pop_size = min(pop_size, max_possible)
+    
     population = []
-    while len(population) < pop_size:
+    seen = set()
+    attempts = 0
+    while len(population) < eff_pop_size and attempts < eff_pop_size * 30:
+        attempts += 1
+        res = random.choice(list(candles_by_res.keys()))
+        session = random.choice(AVAILABLE_SESSIONS)
+        macro_mult = random.choice(AVAILABLE_MULTIPLIERS)
+        tp = random.choice(AVAILABLE_TP_MULTS)
+        sl = random.choice(AVAILABLE_SL_MULTS)
+        pyr = random.choice(AVAILABLE_PYRAMIDS)
+        fast_range, slow_range = get_ema_ranges(res)
         fast = random.randint(fast_range[0], fast_range[1])
         slow = random.randint(max(slow_range[0], fast + 10), slow_range[1])
-        population.append((fast, slow))
+
+        chromosome = (fast, slow, res, session, macro_mult, tp, sl, pyr)
+        if chromosome not in seen:
+            seen.add(chromosome)
+            population.append(chromosome)
+    
+    if not population:
+        print(f"{RED}Error: Could not generate initial population. Check EMA ranges.{RESET}")
+        return False
+    eff_pop_size = len(population)  # Clamp to what we actually got
         
     best_global_fit = -9999.0
     stagnant_gens = 0
-    tourn_size = max(3, pop_size // 10)
+    tourn_size = max(2, min(tourn_size, eff_pop_size // 2))
     
-    print(f"Evolving populations over {generations} generations (Training on {train_count} candles)...")
+    print(f"Evolving populations over {generations} generations...")
     for gen in range(1, generations + 1):
         scored_pop = []
-        for fast, slow in population:
-            profit, max_dd, trades, win_rate, profit_factor = backtest_ema_crossover(candles, fast, slow, end_eval_idx=split_idx)
-            fitness = profit * (1.0 + win_rate) * min(3.0, profit_factor) - (max_dd * 0.75)
-            if trades < 10:
+        for fast, slow, res, session, macro_mult, tp_mult, sl_mult, pyramid_max in population:
+            candles = candles_by_res[res]
+            split_idx_train = int(len(candles) * 0.6)
+            profit, max_dd, trades, win_rate, profit_factor, sharpe = backtest_ema_crossover(
+                candles, fast, slow, tp_mult=tp_mult, sl_mult=sl_mult, pyramid_max=pyramid_max, end_eval_idx=split_idx_train, session_name=session, macro_multiplier=macro_mult
+            )
+            # Sharpe-expectancy normalized fitness formula
+            calmar = profit / max_dd if max_dd > 0 else profit
+            fitness = (sharpe * 2.0) + calmar + (profit_factor * win_rate * math.log1p(trades))
+            if trades < 5:
                 fitness -= 200.0
-            scored_pop.append((fitness, (fast, slow), profit, max_dd, trades))
+            scored_pop.append((fitness, (fast, slow, res, session, macro_mult, tp_mult, sl_mult, pyramid_max), profit, max_dd, trades))
             
         scored_pop.sort(key=lambda x: x[0], reverse=True)
-        best_fit, best_pair, best_p, best_dd, best_tr = scored_pop[0]
+        best_fit, best_chrom, best_p, best_dd, best_tr = scored_pop[0]
+        best_fast, best_slow, best_res, best_session, best_macro, best_tp, best_sl, best_pyr = best_chrom
         
-        print(f"  Gen {gen:2d}/{generations:2d} | Best EMA: Fast {best_pair[0]:2d}/Slow {best_pair[1]:3d} | "
+        print(f"  Gen {gen:2d}/{generations:2d} | Best Strategy: TF {best_res:<3} | Session {best_session:<5} | EMA {best_fast:2d}/{best_slow:3d} (Macro Mult: {best_macro}) | TP: {best_tp} | SL: {best_sl} | Pyr: {best_pyr} | "
               f"Train Return: {best_p:+.2f}% | Max DD: {best_dd:.2f}% | Trades: {best_tr}")
               
         if best_fit > best_global_fit + 0.01:
@@ -637,67 +893,212 @@ def run_genetic_optimization_with_params(symbol, resolution, candles, generation
                 print(f"  {YELLOW}Early stopping triggered (No improvement for 5 generations){RESET}")
                 break
               
-        next_pop = [pair for fit, pair, p, dd, tr in scored_pop[:elites_count]]
+        # Next generation with uniqueness check
+        next_pop = []
+        seen = set()
+        for fit, chromosome, p, dd, tr in scored_pop:
+            if chromosome not in seen:
+                seen.add(chromosome)
+                next_pop.append(chromosome)
+                if len(next_pop) >= elites_count:
+                    break
+                    
         current_mut_rate = mutation_rate * (1.0 - (gen / generations) * 0.5)
         
-        while len(next_pop) < pop_size:
-            parents = []
-            for _ in range(2):
-                candidates = random.sample(scored_pop, tourn_size)
-                candidates.sort(key=lambda x: x[0], reverse=True)
-                parents.append(candidates[0][1])
-                
-            p1, p2 = parents[0], parents[1]
+        while len(next_pop) < eff_pop_size:
+            sample_k = min(tourn_size, len(scored_pop))
+            p1 = max(random.sample(scored_pop, sample_k), key=lambda x: x[0])[1]
+            p2 = max(random.sample(scored_pop, sample_k), key=lambda x: x[0])[1]
             
-            child_fast = int((p1[0] + p2[0]) / 2) + random.choice([-1, 0, 1])
-            child_slow = int((p1[1] + p2[1]) / 2) + random.choice([-2, 0, 2])
+            # Blend Crossover & Discrete Crossover
+            if random.random() < crossover_prob:
+                child_res = random.choice([p1[2], p2[2]])
+                if child_res not in candles_by_res:
+                    child_res = list(candles_by_res.keys())[0]
+                child_session = random.choice([p1[3], p2[3]])
+                child_macro = random.choice([p1[4], p2[4]])
+                child_tp = random.choice([p1[5], p2[5]])
+                child_sl = random.choice([p1[6], p2[6]])
+                child_pyr = random.choice([p1[7], p2[7]])
+                child_fast = int((p1[0] + p2[0]) / 2) + random.randint(-max(1, mutation_scale // 2), max(1, mutation_scale // 2))
+                child_slow = int((p1[1] + p2[1]) / 2) + random.randint(-mutation_scale, mutation_scale)
+            else:
+                child_res = p1[2]
+                child_session = p1[3]
+                child_macro = p1[4]
+                child_tp = p1[5]
+                child_sl = p1[6]
+                child_pyr = p1[7]
+                child_fast = p1[0]
+                child_slow = p1[1]
             
-            if child_slow < child_fast + 10:
-                child_slow = child_fast + 10
-                
-            if random.random() < current_mut_rate:
-                child_fast += random.choice([-2, -1, 1, 2])
-                
-            if random.random() < current_mut_rate:
-                child_slow += random.choice([-5, -2, 2, 5])
-                
+            fast_range, slow_range = get_ema_ranges(child_res)
             child_fast = max(fast_range[0], min(fast_range[1], child_fast))
             child_slow = max(max(slow_range[0], child_fast + 10), min(slow_range[1], child_slow))
-            next_pop.append((child_fast, child_slow))
+            
+            # Apply Mutation
+            if random.random() < current_mut_rate:
+                child_res = random.choice(list(candles_by_res.keys()))
+                fast_range, slow_range = get_ema_ranges(child_res)
+            if random.random() < current_mut_rate:
+                child_session = random.choice(AVAILABLE_SESSIONS)
+            if random.random() < current_mut_rate:
+                child_macro = random.choice(AVAILABLE_MULTIPLIERS)
+            if random.random() < current_mut_rate:
+                child_tp = random.choice(AVAILABLE_TP_MULTS)
+            if random.random() < current_mut_rate:
+                child_sl = random.choice(AVAILABLE_SL_MULTS)
+            if random.random() < current_mut_rate:
+                child_pyr = random.choice(AVAILABLE_PYRAMIDS)
+            if random.random() < current_mut_rate:
+                child_fast = max(fast_range[0], min(fast_range[1], child_fast + random.randint(-mutation_scale, mutation_scale)))
+            if random.random() < current_mut_rate:
+                child_slow = max(max(slow_range[0], child_fast + 10), min(slow_range[1], child_slow + random.randint(-mutation_scale * 2, mutation_scale * 2)))
+                
+            chromosome = (child_fast, child_slow, child_res, child_session, child_macro, child_tp, child_sl, child_pyr)
+            if chromosome not in seen:
+                seen.add(chromosome)
+                next_pop.append(chromosome)
+            else:
+                mutated = False
+                for _ in range(15):
+                    m_fast = max(fast_range[0], min(fast_range[1], child_fast + random.randint(-mutation_scale - 1, mutation_scale + 1)))
+                    m_slow = max(max(slow_range[0], m_fast + 10), min(slow_range[1], child_slow + random.randint(-mutation_scale * 2 - 1, mutation_scale * 2 + 1)))
+                    m_res = random.choice(list(candles_by_res.keys())) if random.random() < 0.3 else child_res
+                    m_session = random.choice(AVAILABLE_SESSIONS) if random.random() < 0.3 else child_session
+                    m_macro = random.choice(AVAILABLE_MULTIPLIERS) if random.random() < 0.3 else child_macro
+                    m_tp = random.choice(AVAILABLE_TP_MULTS) if random.random() < 0.3 else child_tp
+                    m_sl = random.choice(AVAILABLE_SL_MULTS) if random.random() < 0.3 else child_sl
+                    m_pyr = random.choice(AVAILABLE_PYRAMIDS) if random.random() < 0.3 else child_pyr
+                    m_config = (m_fast, m_slow, m_res, m_session, m_macro, m_tp, m_sl, m_pyr)
+                    if m_config not in seen:
+                        seen.add(m_config)
+                        next_pop.append(m_config)
+                        mutated = True
+                        break
+                if not mutated:
+                    for _ in range(50):
+                        r_res = random.choice(list(candles_by_res.keys()))
+                        r_session = random.choice(AVAILABLE_SESSIONS)
+                        r_macro = random.choice(AVAILABLE_MULTIPLIERS)
+                        r_tp = random.choice(AVAILABLE_TP_MULTS)
+                        r_sl = random.choice(AVAILABLE_SL_MULTS)
+                        r_pyr = random.choice(AVAILABLE_PYRAMIDS)
+                        r_fast_range, r_slow_range = get_ema_ranges(r_res)
+                        r_fast = random.randint(r_fast_range[0], r_fast_range[1])
+                        r_slow = random.randint(max(r_slow_range[0], r_fast + 10), r_slow_range[1])
+                        r_config = (r_fast, r_slow, r_res, r_session, r_macro, r_tp, r_sl, r_pyr)
+                        if r_config not in seen:
+                            seen.add(r_config)
+                            next_pop.append(r_config)
+                            mutated = True
+                            break
+                if not mutated:
+                    next_pop.append(chromosome)
             
         population = next_pop
         
-    print(BOLD + CYAN + f"\nRunning Out-of-Sample (OOS) Validation on {len(candles) - split_idx} unseen candles..." + RESET)
+    print(BOLD + CYAN + f"\nRunning Out-of-Sample (OOS) Validation..." + RESET)
     final_scored = []
-    for fast, slow in population:
-        tr_p, tr_dd, tr_tr, tr_wr, tr_pf = backtest_ema_crossover(candles, fast, slow, end_eval_idx=split_idx)
-        train_fitness = tr_p * (1.0 + tr_wr) * min(3.0, tr_pf) - (tr_dd * 0.75)
+    for fast, slow, res, session, macro_mult, tp_mult, sl_mult, pyramid_max in population:
+        candles = candles_by_res[res]
+        split_idx_train = int(len(candles) * 0.70)
+        
+        # Train on 70%
+        tr_p, tr_dd, tr_tr, tr_wr, tr_pf, tr_sharpe = backtest_ema_crossover(
+            candles, fast, slow, tp_mult=tp_mult, sl_mult=sl_mult, pyramid_max=pyramid_max, end_eval_idx=split_idx_train, session_name=session, macro_multiplier=macro_mult
+        )
+        tr_calmar = tr_p / tr_dd if tr_dd > 0 else tr_p
+        train_fitness = (tr_sharpe * 2.0) + tr_calmar + (tr_pf * tr_wr * math.log1p(tr_tr))
         if tr_tr < 10:
             train_fitness -= 200.0
             
-        te_p, te_dd, te_tr, te_wr, te_pf = backtest_ema_crossover(candles, fast, slow, start_eval_idx=split_idx)
-        test_fitness = te_p * (1.0 + te_wr) * min(3.0, te_pf) - (te_dd * 0.75)
+        final_fit = train_fitness
         
-        if te_p <= 0 or test_fitness < (train_fitness * 0.2):
-            final_fit = train_fitness - 1000.0
-        else:
-            final_fit = (train_fitness * 0.6) + (test_fitness * 0.4)
-            
-        final_scored.append((final_fit, (fast, slow), tr_p, tr_dd, tr_tr, te_p, te_dd, te_tr))
+        # Out-of-Sample Holdout (30%) - evaluated for reporting but never used in final_fit selection
+        te_p, te_dd, te_tr, te_wr, te_pf, te_sharpe = backtest_ema_crossover(
+            candles, fast, slow, tp_mult=tp_mult, sl_mult=sl_mult, pyramid_max=pyramid_max, start_eval_idx=split_idx_train, session_name=session, macro_multiplier=macro_mult
+        )
+        
+        final_scored.append((final_fit, (fast, slow, res, session, macro_mult, tp_mult, sl_mult, pyramid_max), tr_p, tr_dd, tr_tr, tr_wr, tr_pf, tr_sharpe, te_p, te_dd, te_tr, te_wr, te_pf, te_sharpe))
         
     final_scored.sort(key=lambda x: x[0], reverse=True)
-    best_fitness, (best_fast, best_slow), tr_p, tr_dd, tr_tr, te_p, te_dd, te_tr = final_scored[0]
+    best_fitness, (best_fast, best_slow, best_res, best_session, best_macro, best_tp, best_sl, best_pyr), tr_p, tr_dd, tr_tr, tr_wr, tr_pf, tr_sharpe, te_p, te_dd, te_tr, te_wr, te_pf, te_sharpe = final_scored[0]
     
+    # Extract top 3 unique configurations for ensemble
+    top_ensemble = []
+    seen_configs = set()
+    for fit, chrom, itp, itd, itt, ivp, ivd, ivs, otp, otd, ott, ovp, ovd, ovs in final_scored:
+        fast, slow, res, session, macro_mult, tp_mult, sl_mult, pyramid_max = chrom
+        config_key = (fast, slow, res, session, macro_mult, tp_mult, sl_mult, pyramid_max)
+        if config_key not in seen_configs:
+            seen_configs.add(config_key)
+            top_ensemble.append({
+                "resolution": res,
+                "fast_period": fast,
+                "slow_period": slow,
+                "session_name": session,
+                "macro_multiplier": macro_mult,
+                "take_profit_mult": tp_mult,
+                "stop_loss_mult": sl_mult,
+                "pyramiding_max": pyramid_max
+            })
+            if len(top_ensemble) >= 3:
+                break
+                
     print(BOLD + GREEN + f"\nOptimization Complete!" + RESET)
-    print(f"Optimal EMA Strategy: Fast {best_fast} / Slow {best_slow}")
+    print(f"Optimal EMA Strategy: Fast {best_fast} / Slow {best_slow} on Timeframe: {best_res} | Session: {best_session} | Macro Mult: {best_macro} | TP: {best_tp} | SL: {best_sl} | Pyr: {best_pyr}")
     print(f"Training (In-Sample) Return:   {tr_p:+.2f}% | Max DD: {tr_dd:.2f}% | Trades: {tr_tr}")
     
     if te_p > 0:
-        print(f"Testing (Out-of-Sample) Return: {BOLD}{GREEN}{te_p:+.2f}%{RESET} | Max DD: {te_dd:.2f}% | Trades: {te_tr}")
+        if tr_tr >= 15:
+            print(f"{CYAN}--- Cross-Asset Validation ---{RESET}")
+            # Find a correlated asset
+            crypto_twins = {
+                'BTCUSD': 'ETHUSD', 'ETHUSD': 'BTCUSD',
+                'SOLUSD': 'AVAXUSD', 'AVAXUSD': 'SOLUSD',
+                'DOGEUSD': 'PEPEUSD', 'PEPEUSD': 'DOGEUSD',
+                'QQQXUSD': 'SPYXUSD', 'SPYXUSD': 'QQQXUSD',
+                'XAUTUSD': 'SLVONUSD', 'SLVONUSD': 'XAUTUSD'
+            }
+            twin_sym = crypto_twins.get(symbol)
+            cross_passed = True
+            
+            if twin_sym:
+                print(f"Validating {symbol} strategy robustness against {twin_sym}...")
+                c_cnt = get_backtest_candle_count(best_res)
+                twin_candles, err = fetch_candle_data(twin_sym, best_res, c_cnt)
+                if not err and twin_candles and len(twin_candles) >= 40:
+                    twin_tr_p, twin_tr_dd, twin_tr_tr, twin_tr_wr, twin_tr_pf, twin_sharpe = backtest_ema_crossover(
+                        twin_candles, best_fast, best_slow, tp_mult=best_tp, sl_mult=best_sl, pyramid_max=best_pyr, session_name=best_session, macro_multiplier=best_macro
+                    )
+                    if twin_tr_p > 0:
+                        print(f"Cross-Asset Return on {twin_sym}: {BOLD}{GREEN}{twin_tr_p:+.2f}%{RESET} | Max DD: {twin_tr_dd:.2f}% | Trades: {twin_tr_tr}")
+                    else:
+                        print(f"Cross-Asset Return on {twin_sym}: {BOLD}{RED}{twin_tr_p:+.2f}% (FAILED){RESET} - Strategy is curve-fitted to {symbol}!")
+                        cross_passed = False
+                else:
+                    print(f"Could not fetch {twin_sym} data, skipping cross-validation.")
+            else:
+                print(f"No twin asset mapping for {symbol}, skipping cross-validation.")
+                
+            if not cross_passed:
+                print(f"{RED}Rejecting strategy due to Cross-Asset Validation failure.{RESET}")
+                return False
+                
+            _twin_p = twin_tr_p if 'twin_tr_p' in dir() else 0.0
+            _twin_dd = twin_tr_dd if 'twin_tr_dd' in dir() else 0.0
+            print_finalized_report(symbol, best_res, best_fast, best_slow, best_session, best_macro, best_tp, best_sl, best_pyr, tr_p, tr_dd, tr_tr, tr_wr, tr_pf, tr_sharpe, te_p, te_dd, te_tr, te_wr, te_pf, te_sharpe, twin_sym, _twin_p, _twin_dd)
+            save_optimized_settings(symbol, best_res, best_fast, best_slow, session_name=best_session, macro_multiplier=best_macro, ensemble=top_ensemble, tp_mult=best_tp, sl_mult=best_sl, pyramid_max=best_pyr)
+            return True
+        else:
+            print(f"Testing (Out-of-Sample) Return: {BOLD}{YELLOW}{te_p:+.2f}% (Passed OOS but trade count {tr_tr} is under statistical threshold of 15){RESET} | Max DD: {te_dd:.2f}% | Trades: {te_tr}")
+            print(f"{YELLOW}Skipping saving settings to optimized_settings.json to avoid small-sample overfitting.{RESET}")
+            return False
     else:
         print(f"Testing (Out-of-Sample) Return: {BOLD}{RED}{te_p:+.2f}% (FAILED OOS){RESET} | Max DD: {te_dd:.2f}% | Trades: {te_tr}")
-        
-    save_optimized_settings(symbol, resolution, best_fast, best_slow)
+        print(f"{YELLOW}Skipping saving settings to optimized_settings.json because strategy failed Out-of-Sample validation.{RESET}")
+        return False
 
 def run_meta_genetic_optimization(symbol, resolution, meta_generations=5, meta_pop_size=10):
     """
@@ -715,29 +1116,39 @@ def run_meta_genetic_optimization(symbol, resolution, meta_generations=5, meta_p
     print(f"Loaded {len(candles)} historical candles. Initializing meta-population...")
     
     population = []
+    seen = set()
     while len(population) < meta_pop_size:
-        pop_size = random.randint(15, 50)
-        elites = random.randint(2, min(8, pop_size - 5))
+        pop_size = random.randint(50, 200)
+        elites = max(1, min(int(pop_size * 0.15), random.randint(2, 8)))
         mut_rate = round(random.uniform(0.1, 0.4), 2)
-        gens = random.randint(5, 15)
-        population.append((pop_size, elites, mut_rate, gens))
+        gens = random.randint(20, 100)
+        tourn_size = random.randint(2, 6)
+        mutation_scale = random.randint(1, 4)
+        crossover_prob = round(random.uniform(0.4, 0.9), 2)
+        fitness_dd_weight = round(random.uniform(0.1, 1.5), 2)
+        config = (pop_size, elites, mut_rate, gens, tourn_size, mutation_scale, crossover_prob, fitness_dd_weight)
+        if config not in seen:
+            seen.add(config)
+            population.append(config)
         
     best_global_fit = -9999.0
     stagnant_gens = 0
-    tourn_size = max(3, meta_pop_size // 4)
+    meta_tourn_size = max(3, meta_pop_size // 4)
     
     print("Evolving GA hyperparameters...")
     for gen in range(1, meta_generations + 1):
         scored_pop = []
-        for pop_size, elites, mut_rate, gens in population:
+        for pop_size, elites, mut_rate, gens, tourn_size, mutation_scale, crossover_prob, fitness_dd_weight in population:
             runs_fitness = []
             for _ in range(2):
-                best_fast, best_slow, profit, max_dd, trades = run_genetic_optimization_inner(
-                    candles, resolution, gens, pop_size, elites, mut_rate
+                best_chrom, profit, max_dd, trades = run_genetic_optimization_inner(
+                    candles, resolution, gens, pop_size, elites, mut_rate, tourn_size, mutation_scale, crossover_prob, fitness_dd_weight
                 )
+                best_fast, best_slow, best_res, best_session, best_macro, best_tp, best_sl, best_pyr = best_chrom
                 # Compute strategy fitness using same advanced formula
-                _, _, _, win_rate, profit_factor = backtest_ema_crossover(candles, best_fast, best_slow)
-                fitness = profit * (1.0 + win_rate) * min(3.0, profit_factor) - (max_dd * 0.75)
+                _, _, _, win_rate, profit_factor, sharpe = backtest_ema_crossover(candles, best_fast, best_slow, tp_mult=best_tp, sl_mult=best_sl, pyramid_max=best_pyr, session_name=best_session, macro_multiplier=best_macro)
+                calmar_m = profit / max_dd if max_dd > 0 else profit
+                fitness = (sharpe * 2.0) + calmar_m + (profit_factor * win_rate * math.log1p(trades))
                 if trades < 15:
                     fitness -= 200.0
                 runs_fitness.append(fitness)
@@ -745,7 +1156,7 @@ def run_meta_genetic_optimization(symbol, resolution, meta_generations=5, meta_p
             # Efficiency Penalty: penalize excessively large computational load
             efficiency_penalty = (pop_size * gens) * 0.05
             penalized_fitness = avg_fitness - efficiency_penalty
-            scored_pop.append((penalized_fitness, (pop_size, elites, mut_rate, gens), avg_fitness))
+            scored_pop.append((penalized_fitness, (pop_size, elites, mut_rate, gens, tourn_size, mutation_scale, crossover_prob, fitness_dd_weight), avg_fitness))
             
         scored_pop.sort(key=lambda x: x[0], reverse=True)
         best_penalized_fit, best_params, best_real_fit = scored_pop[0]
@@ -761,60 +1172,123 @@ def run_meta_genetic_optimization(symbol, resolution, meta_generations=5, meta_p
                 print(f"  {YELLOW}Meta-GA Early stopping triggered (No improvement for 3 generations){RESET}")
                 break
         
-        # Mating and breeding
+        # Mating and breeding with uniqueness check
         elites_count = max(2, meta_pop_size // 4)
-        next_pop = [params for pfit, params, rfit in scored_pop[:elites_count]]
+        next_pop = []
+        seen = set()
+        for pfit, params, rfit in scored_pop:
+            if params not in seen:
+                seen.add(params)
+                next_pop.append(params)
+                if len(next_pop) >= elites_count:
+                    break
+                    
         current_mut_rate = 0.25 * (1.0 - (gen / meta_generations) * 0.5)
         
         while len(next_pop) < meta_pop_size:
-            parents = random.sample(scored_pop[:max(3, tourn_size)], 2)
+            pool = scored_pop[:max(3, meta_tourn_size)]
+            if len(pool) < 2:
+                pool = scored_pop  # fallback to full list
+            parents = random.sample(pool, min(2, len(pool)))
+            if len(parents) < 2:
+                parents = [parents[0], parents[0]]
             p1, p2 = parents[0][1], parents[1][1]
             
             # Blend Crossover
-            child_pop_size = int((p1[0] + p2[0]) / 2) + random.choice([-2, 0, 2])
-            child_elites = int((p1[1] + p2[1]) / 2) + random.choice([-1, 0, 1])
+            child_pop_size = max(50, min(200, int((p1[0] + p2[0]) / 2) + random.choice([-2, 0, 2])))
+            child_elites = max(1, min(int(child_pop_size * 0.15), int((p1[1] + p2[1]) / 2) + random.choice([-1, 0, 1])))
             child_mut_rate = round((p1[2] + p2[2]) / 2 + random.choice([-0.05, 0.0, 0.05]), 2)
-            child_gens = int((p1[3] + p2[3]) / 2) + random.choice([-1, 0, 1])
+            child_gens = max(10, min(25, int((p1[3] + p2[3]) / 2) + random.choice([-1, 0, 1])))
+            child_tourn = max(2, min(8, int((p1[4] + p2[4]) / 2) + random.choice([-1, 0, 1])))
+            child_scale = max(1, min(4, int((p1[5] + p2[5]) / 2) + random.choice([-1, 0, 1])))
+            child_cross = max(0.2, min(0.95, round((p1[6] + p2[6]) / 2 + random.choice([-0.05, 0.0, 0.05]), 2)))
+            child_weight = max(0.05, min(2.0, round((p1[7] + p2[7]) / 2 + random.choice([-0.1, 0.0, 0.1]), 2)))
             
-            if child_elites >= child_pop_size:
-                child_elites = max(2, child_pop_size // 5)
-                
             # Mutation
             if random.random() < current_mut_rate:
-                child_pop_size = max(10, min(60, child_pop_size + random.choice([-5, -2, 2, 5])))
+                child_pop_size = max(50, min(200, child_pop_size + random.choice([-5, -2, 2, 5])))
             if random.random() < current_mut_rate:
-                child_elites = max(1, min(12, child_elites + random.choice([-1, 1])))
+                child_elites = max(1, min(int(child_pop_size * 0.15), child_elites + random.choice([-1, 1])))
             if random.random() < current_mut_rate:
                 child_mut_rate = max(0.05, min(0.5, round(child_mut_rate + random.choice([-0.05, 0.05]), 2)))
             if random.random() < current_mut_rate:
-                child_gens = max(3, min(25, child_gens + random.choice([-2, -1, 1, 2])))
+                child_gens = max(10, min(100, child_gens + random.choice([-2, -1, 1, 2])))
+            if random.random() < current_mut_rate:
+                child_tourn = max(2, min(8, child_tourn + random.choice([-1, 1])))
+            if random.random() < current_mut_rate:
+                child_scale = max(1, min(4, child_scale + random.choice([-1, 1])))
+            if random.random() < current_mut_rate:
+                child_cross = max(0.2, min(0.95, round(child_cross + random.choice([-0.05, 0.05]), 2)))
+            if random.random() < current_mut_rate:
+                child_weight = max(0.05, min(2.0, round(child_weight + random.choice([-0.1, 0.1]), 2)))
                 
-            if child_elites >= child_pop_size:
-                child_elites = max(1, child_pop_size // 5)
+            child_elites = max(1, min(int(child_pop_size * 0.15), child_elites))
                 
-            next_pop.append((child_pop_size, child_elites, child_mut_rate, child_gens))
+            config = (child_pop_size, child_elites, child_mut_rate, child_gens, child_tourn, child_scale, child_cross, child_weight)
+            if config not in seen:
+                seen.add(config)
+                next_pop.append(config)
+            else:
+                # Mutate to make it unique
+                mutated = False
+                for _ in range(15):
+                    m_pop_size = max(50, min(200, child_pop_size + random.choice([-3, -1, 1, 3])))
+                    m_elites = max(1, min(int(m_pop_size * 0.15), child_elites + random.choice([-1, 1])))
+                    m_mut_rate = max(0.05, min(0.5, round(child_mut_rate + random.choice([-0.03, 0.03]), 2)))
+                    m_gens = max(10, min(100, child_gens + random.choice([-2, -1, 1, 2])))
+                    m_tourn = max(2, min(8, child_tourn + random.choice([-1, 1])))
+                    m_scale = max(1, min(4, child_scale + random.choice([-1, 1])))
+                    m_cross = max(0.2, min(0.95, round(child_cross + random.choice([-0.03, 0.03]), 2)))
+                    m_weight = max(0.05, min(2.0, round(child_weight + random.choice([-0.05, 0.05]), 2)))
+                    m_config = (m_pop_size, m_elites, m_mut_rate, m_gens, m_tourn, m_scale, m_cross, m_weight)
+                    if m_config not in seen:
+                        seen.add(m_config)
+                        next_pop.append(m_config)
+                        mutated = True
+                        break
+                if not mutated:
+                    # Fallback to random search
+                    for _ in range(50):
+                        r_pop_size = random.randint(50, 200)
+                        r_elites = max(1, min(int(r_pop_size * 0.15), random.randint(2, 8)))
+                        r_mut_rate = round(random.uniform(0.1, 0.4), 2)
+                        r_gens = random.randint(20, 100)
+                        r_tourn = random.randint(2, 6)
+                        r_scale = random.randint(1, 4)
+                        r_cross = round(random.uniform(0.4, 0.9), 2)
+                        r_weight = round(random.uniform(0.1, 1.5), 2)
+                        r_config = (r_pop_size, r_elites, r_mut_rate, r_gens, r_tourn, r_scale, r_cross, r_weight)
+                        if r_config not in seen:
+                            seen.add(r_config)
+                            next_pop.append(r_config)
+                            mutated = True
+                            break
+                if not mutated:
+                    next_pop.append(config)
             
         population = next_pop
         
     final_scored = []
-    for pop_size, elites, mut_rate, gens in population:
+    for pop_size, elites, mut_rate, gens, tourn_size, mutation_scale, crossover_prob, fitness_dd_weight in population:
         runs_fitness = []
         for _ in range(2):
-            best_fast, best_slow, profit, max_dd, trades = run_genetic_optimization_inner(
-                candles, resolution, gens, pop_size, elites, mut_rate
+            best_chrom, profit, max_dd, trades = run_genetic_optimization_inner(
+                candles, resolution, gens, pop_size, elites, mut_rate, tourn_size, mutation_scale, crossover_prob, fitness_dd_weight
             )
-            _, _, _, win_rate, profit_factor = backtest_ema_crossover(candles, best_fast, best_slow)
-            fitness = profit * (1.0 + win_rate) * min(3.0, profit_factor) - (max_dd * 0.75)
+            best_fast, best_slow, best_res, best_session, best_macro, best_tp, best_sl, best_pyr = best_chrom
+            _, _, _, win_rate, profit_factor, sharpe = backtest_ema_crossover(candles, best_fast, best_slow, tp_mult=best_tp, sl_mult=best_sl, pyramid_max=best_pyr, session_name=best_session, macro_multiplier=best_macro)
+            calmar_m = profit / max_dd if max_dd > 0 else profit
+            fitness = (sharpe * 2.0) + calmar_m + (profit_factor * win_rate * math.log1p(trades))
             if trades < 15:
                 fitness -= 200.0
             runs_fitness.append(fitness)
         avg_fitness = sum(runs_fitness) / len(runs_fitness)
         efficiency_penalty = (pop_size * gens) * 0.05
         penalized_fitness = avg_fitness - efficiency_penalty
-        final_scored.append((penalized_fitness, (pop_size, elites, mut_rate, gens), avg_fitness))
+        final_scored.append((penalized_fitness, (pop_size, elites, mut_rate, gens, tourn_size, mutation_scale, crossover_prob, fitness_dd_weight), avg_fitness))
         
     final_scored.sort(key=lambda x: x[0], reverse=True)
-    best_penalized_fit, (best_pop_size, best_elites, best_mut_rate, best_gens), best_avg_fit = final_scored[0]
+    best_penalized_fit, (best_pop_size, best_elites, best_mut_rate, best_gens, best_tourn, best_scale, best_cross, best_weight), best_avg_fit = final_scored[0]
     
     print(BOLD + GREEN + f"\nMeta-Optimization Complete!" + RESET)
     print(f"Optimal GA Configuration:")
@@ -822,12 +1296,39 @@ def run_meta_genetic_optimization(symbol, resolution, meta_generations=5, meta_p
     print(f"  Elites Count:    {best_elites}")
     print(f"  Mutation Rate:   {best_mut_rate}")
     print(f"  Generations:     {best_gens}")
+    print(f"  Tournament Size: {best_tourn}")
+    print(f"  Mutation Scale:  {best_scale}")
+    print(f"  Crossover Prob:  {best_cross:.2f}")
+    print(f"  Drawdown Weight: {best_weight:.2f}")
     print(f"  Expected Avg Strategy Fitness: {best_avg_fit:+.2f} (Penalized: {best_penalized_fit:+.2f})")
     
     print(BOLD + CYAN + f"\nRunning final strategy optimization using tuned hyperparameters..." + RESET)
-    run_genetic_optimization_with_params(symbol, resolution, candles, best_gens, best_pop_size, best_elites, best_mut_rate)
-
-
+    resolutions = ['5m', '15m', '30m', '1h', '4h', '1d']
+    candles_by_res = {}
+    for res in resolutions:
+        if res == resolution and not err and candles:
+            candles_by_res[res] = candles
+        else:
+            c_cnt = get_backtest_candle_count(res)
+            c_data, c_err = fetch_candle_data(symbol, res, c_cnt)
+            if not c_err and c_data and len(c_data) >= 40:
+                candles_by_res[res] = c_data
+                
+    success = run_genetic_optimization_with_params(symbol, resolution, candles_by_res, best_gens, best_pop_size, best_elites, best_mut_rate, best_tourn, best_scale, best_cross, best_weight)
+    if not success:
+        fallback_sequence = ['1d', '4h', '1h', '30m', '15m', '5m']
+        if resolution in fallback_sequence:
+            start_idx = fallback_sequence.index(resolution)
+            for fallback_res in fallback_sequence[start_idx + 1:]:
+                if fallback_res not in candles_by_res:
+                    continue
+                print(BOLD + YELLOW + f"\n[OOS Failure Fallback] Retrying final optimization for {symbol} with lower timeframe: {fallback_res}... {RESET}")
+                success = run_genetic_optimization_with_params(symbol, fallback_res, candles_by_res, best_gens, best_pop_size, best_elites, best_mut_rate, best_tourn, best_scale, best_cross, best_weight)
+                if success:
+                    print(BOLD + GREEN + f"[OOS Failure Fallback] Strategy optimization succeeded on fallback resolution {fallback_res}!" + RESET)
+                    break
+    
+    return success
 def run_autopilot_setup(resolution='1h', generations=10):
     """
     Hands-off auto-pilot orchestration:
@@ -907,11 +1408,21 @@ def run_autopilot_setup(resolution='1h', generations=10):
     print(f"\n{CYAN}[Auto-Pilot] Step 1: Target Assets Identified: {', '.join(target_symbols)}{RESET}")
     time.sleep(2)
     
-    # 2. Iterate and optimize
+    # 2. Iterate and optimize via Meta-GA autonomously
+    valid_symbols = []
     for sym in target_symbols:
-        print(f"\n{CYAN}[Auto-Pilot] Step 2: Optimizing Strategy for {sym} on {resolution}...{RESET}")
-        run_genetic_optimization(sym, resolution, generations)
+        print(f"\n{CYAN}[Auto-Pilot] Step 2: Optimizing Strategy via Meta-GA for {sym} on {resolution}...{RESET}")
+        success = run_meta_genetic_optimization(sym, resolution, meta_generations=5, meta_pop_size=10)
+        if success:
+            valid_symbols.append(sym)
+        else:
+            print(f"{RED}[Auto-Pilot] Skipping {sym} due to OOS optimization failure.{RESET}")
         time.sleep(1)
+        
+    target_symbols = valid_symbols
+    if not target_symbols:
+        print(f"\n{RED}[Auto-Pilot] All target assets failed optimization. Aborting Auto-Pilot.{RESET}")
+        return
         
     # 3. Stop existing daemon
     print(f"\n{CYAN}[Auto-Pilot] Step 3: Orchestrating Background Daemon...{RESET}")
@@ -1234,8 +1745,39 @@ def get_product_id_by_symbol(symbol):
                         return PRODUCT_ID_CACHE[symbol]
     except Exception as e:
         print(f"Error resolving product ID for {symbol}: {e}")
+CONTRACT_VALUE_CACHE = {
+    'BTCUSD': 0.0001,
+    'ETHUSD': 0.001,
+    'SOLUSD': 0.01,
+    'AVAXUSD': 0.1,
+    'BNBUSD': 0.01,
+    'XAUTUSD': 0.01
+}
+
+def get_contract_value(symbol):
+    """
+    Fetches the contract value (asset multiplier) of the symbol from Delta Exchange.
+    Uses memory cache first to prevent latency/rate-limit leaks.
+    """
+    if symbol in CONTRACT_VALUE_CACHE:
+        return CONTRACT_VALUE_CACHE[symbol]
         
-    return None
+    try:
+        url = "https://api.india.delta.exchange/v2/tickers"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=5) as response:
+            if response.status == 200:
+                tickers = json.loads(response.read().decode('utf-8')).get('result', [])
+                for t in tickers:
+                    sym = t.get('symbol')
+                    val = t.get('contract_value')
+                    if sym and val is not None:
+                        CONTRACT_VALUE_CACHE[sym] = float(val)
+                if symbol in CONTRACT_VALUE_CACHE:
+                    return CONTRACT_VALUE_CACHE[symbol]
+    except Exception:
+        pass
+    return 1.0
 
 def place_market_order(symbol, side, size, account_idx=1):
     """
@@ -1296,7 +1838,7 @@ def resolution_to_seconds(res):
     except Exception:
         return 3600
 
-def parse_resolution_input(user_input, default_val='1d'):
+def parse_resolution_input(user_input, default_val='1d', is_menu_choice=False):
     """
     Cleans and parses resolution input. Strips quotes and allows both
     digit choices (e.g. '5') and direct codes (e.g. '1h').
@@ -1308,10 +1850,14 @@ def parse_resolution_input(user_input, default_val='1d'):
         if cleaned == res.lower():
             return res
             
-    if cleaned.isdigit():
+    if is_menu_choice and cleaned.isdigit():
         idx = int(cleaned) - 1
         if 0 <= idx < len(sorted_resolutions):
             return sorted_resolutions[idx]
+            
+    # Protect against PowerShell evaluating 1d as decimal 1
+    if not is_menu_choice and cleaned == '1':
+        return '1d'
             
     return default_val
 
@@ -1336,20 +1882,18 @@ def get_validated_int_input(prompt, help_text, default_val, min_val, max_val):
 
 def fetch_candle_data(symbol, resolution, candle_count):
     """
-    Fetches candle data from the Delta Exchange API.
-    Uses a 2.5x time buffer to account for weekends and holidays in stock/commodity data.
-    If the request fails or returns empty (e.g. because start time is too far in the past),
-    it dynamically retries with smaller candle counts.
+    Fetches candle data from the Delta Exchange API using pagination to avoid HTTP 400 Bad Request.
+    Uses 500-candle chunks, moving backwards in time.
     """
-    attempts = [candle_count, candle_count // 2, candle_count // 4, 1000, 500, 200]
+    chunk_size = 500
+    all_candles = []
+    end_time = int(time.time())
     last_err = "No data"
     
-    for count in attempts:
-        if count < 2:
-            continue
-            
-        seconds_needed = int(count * 2.5 * resolution_to_seconds(resolution))
-        end_time = int(time.time())
+    while len(all_candles) < candle_count:
+        needed = min(chunk_size, candle_count - len(all_candles))
+        # Buffer of 3x to handle weekends for traditional assets
+        seconds_needed = int(needed * 3.0 * resolution_to_seconds(resolution))
         start_time = end_time - seconds_needed
 
         params = {
@@ -1358,86 +1902,68 @@ def fetch_candle_data(symbol, resolution, candle_count):
             'start': start_time,
             'end': end_time
         }
-
         query = urllib.parse.urlencode(params)
-        url = f"https://api.india.delta.exchange/v2/history/candles?{query}"
-
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        try:
-            with urllib.request.urlopen(req, timeout=10) as response:
-                if response.status == 200:
-                    data = json.loads(response.read().decode('utf-8'))
-                    if data.get('success'):
-                        candles = data.get('result', [])
-                        if candles:
-                            # Sort chronologically (oldest to newest)
-                            candles.sort(key=lambda x: x['time'])
-                            return candles[-count:], None
-                        else:
-                            last_err = "API returned success=true but empty list (probably requested too far in the past)"
-                    else:
-                        last_err = f"API returned success=false: {data.get('error', {}).get('message', 'Unknown error')}"
-                else:
-                    last_err = f"HTTP error {response.status}"
-        except urllib.error.HTTPError as e:
-            if e.code == 429:
-                reset_ms = e.headers.get('X-RATE-LIMIT-RESET')
-                if reset_ms:
-                    try:
-                        reset_sec = float(reset_ms) / 1000.0
-                    except (TypeError, ValueError):
-                        reset_sec = 5.0
-                    sleep_dur = min(300.0, reset_sec)
-                    print(f"\n{YELLOW}[Rate Limit] Exceeded (HTTP 429). Auto-sleeping for {sleep_dur:.2f}s before retrying...{RESET}")
-                    time.sleep(sleep_dur)
-                    try:
-                        with urllib.request.urlopen(req, timeout=10) as response:
-                            if response.status == 200:
-                                data = json.loads(response.read().decode('utf-8'))
-                                if data.get('success'):
-                                    candles = data.get('result', [])
-                                    if candles:
-                                        candles.sort(key=lambda x: x['time'])
-                                        return candles[-count:], None
-                    except Exception as retry_err:
-                        last_err = f"Failed on rate limit retry: {str(retry_err)}"
-                last_err = "API Rate Limit Exceeded (HTTP 429)."
-            else:
-                # Fallback to global Delta API for other HTTP errors
-                fallback_url = f"https://api.delta.exchange/v2/history/candles?{query}"
-                req_fallback = urllib.request.Request(fallback_url, headers={'User-Agent': 'Mozilla/5.0'})
-                try:
-                    with urllib.request.urlopen(req_fallback, timeout=10) as response:
-                        if response.status == 200:
-                            data = json.loads(response.read().decode('utf-8'))
-                            if data.get('success'):
-                                candles = data.get('result', [])
-                                if candles:
-                                    candles.sort(key=lambda x: x['time'])
-                                    return candles[-count:], None
-                except Exception:
-                    pass
-                last_err = f"HTTP error {e.code}: {e.reason}"
-        except urllib.error.URLError as e:
-            # Fallback to global Delta API just in case Delta India is down
-            fallback_url = f"https://api.delta.exchange/v2/history/candles?{query}"
-            req_fallback = urllib.request.Request(fallback_url, headers={'User-Agent': 'Mozilla/5.0'})
+        
+        urls_to_try = [
+            f"https://api.india.delta.exchange/v2/history/candles?{query}",
+            f"https://api.delta.exchange/v2/history/candles?{query}"
+        ]
+        
+        chunk = []
+        for url in urls_to_try:
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
             try:
-                with urllib.request.urlopen(req_fallback, timeout=10) as response:
+                with urllib.request.urlopen(req, timeout=10) as response:
                     if response.status == 200:
                         data = json.loads(response.read().decode('utf-8'))
                         if data.get('success'):
-                            candles = data.get('result', [])
-                            if candles:
-                                candles.sort(key=lambda x: x['time'])
-                                return candles[-count:], None
-            except Exception:
-                pass
-            last_err = f"Failed to connect to API: {e.reason}"
-        except Exception as e:
-            last_err = f"Unexpected error: {str(e)}"
+                            chunk = data.get('result', [])
+                            if chunk:
+                                break
+                        else:
+                            last_err = f"API success=false: {data.get('error', {}).get('message', 'Unknown error')}"
+            except urllib.error.HTTPError as e:
+                if e.code == 429:
+                    reset_ms = e.headers.get('X-RATE-LIMIT-RESET', '5000')
+                    try:
+                        reset_sec = float(reset_ms) / 1000.0
+                    except:
+                        reset_sec = 5.0
+                    sleep_dur = min(300.0, reset_sec)
+                    print(f"\n{YELLOW}[Rate Limit] Auto-sleeping for {sleep_dur:.2f}s...{RESET}")
+                    time.sleep(sleep_dur)
+                    break # Break inner loop to retry this chunk on next while iteration
+                else:
+                    last_err = f"HTTP error {e.code}"
+            except Exception as e:
+                last_err = f"Error: {str(e)}"
+                
+        if not chunk:
+            if all_candles:
+                break
+            return [], last_err
             
-    return [], last_err
+        chunk.sort(key=lambda x: x['time'])
+        all_candles = chunk + all_candles
+        
+        # Deduplicate
+        unique_candles = []
+        seen_times = set()
+        for c in all_candles:
+            if c['time'] not in seen_times:
+                seen_times.add(c['time'])
+                unique_candles.append(c)
+        all_candles = unique_candles
+        
+        # Advance end_time
+        end_time = min(chunk, key=lambda x: x['time'])['time'] - 1
+        
+        # If we barely got any data despite 3x buffer, we might have hit history start
+        if len(chunk) < int(needed * 0.2):
+            break
+
+    all_candles.sort(key=lambda x: x['time'])
+    return all_candles[-candle_count:], None
 
 def render_ascii_chart(candles, height=12):
     """
@@ -1877,34 +2403,106 @@ def run_live_monitor(symbols, resolution, poll_interval=15, trade=False, trade_s
     # First, initialize states
     print(f"\n{YELLOW}Initializing crossover tracking states...{RESET}")
     for symbol in symbols:
-        fast_period = 9
-        slow_period = 21
-        opt_key = f"{symbol}_{resolution}"
-        if opt_key in opt_settings:
-            fast_period = opt_settings[opt_key].get("fast_period", 9)
-            slow_period = opt_settings[opt_key].get("slow_period", 21)
-            print(f"  {symbol}: Using GA optimized parameters Fast EMA({fast_period}) / Slow EMA({slow_period}).")
+        # Load ensemble config
+        ensemble = []
+        if symbol in opt_settings and "ensemble" in opt_settings[symbol]:
+            ensemble = opt_settings[symbol]["ensemble"]
+        else:
+            fast = opt_settings.get(f"{symbol}_{resolution}", {}).get("fast_period", 9)
+            slow = opt_settings.get(f"{symbol}_{resolution}", {}).get("slow_period", 21)
+            macro = opt_settings.get(f"{symbol}_{resolution}", {}).get("macro_multiplier", 4)
+            session = opt_settings.get(f"{symbol}_{resolution}", {}).get("session_name", '24_7')
+            ensemble = [{
+                "resolution": resolution,
+                "fast_period": fast,
+                "slow_period": slow,
+                "session_name": session,
+                "macro_multiplier": macro
+            }]
             
-        candles, err = fetch_candle_data(symbol, resolution, slow_period + 45)
-        if err or not candles or len(candles) < 2:
-            print(f"  {symbol}: {RED}Error initializing ({err or 'No data'}){RESET}")
-            states[symbol] = "ERROR"
-            continue
-            
-        closes = [c['close'] for c in candles]
-        fast_ema = calculate_ema(closes, fast_period)
-        slow_ema = calculate_ema(closes, slow_period)
+        print(f"  {symbol}: Using {len(ensemble)}-config Multi-EMA Ensemble.")
         
-        if len(fast_ema) < slow_period + 2 or fast_ema[-2] is None or slow_ema[-2] is None:
-            states[symbol] = "ERROR"
-            continue
+        # Initialize tracking states
+        last_evaluated_candle_time[symbol] = {}
+        config_signals = []
+        atr_sum = 0
+        valid_atrs = 0
+        
+        # Fetch candles for each unique resolution
+        unique_res = list(set([cfg["resolution"] for cfg in ensemble]))
+        candles_by_res = {}
+        for r in unique_res:
+            req_candles = 200
+            c_data, err = fetch_candle_data(symbol, r, req_candles)
+            if not err and c_data and len(c_data) >= 2:
+                candles_by_res[r] = c_data
+                last_evaluated_candle_time[symbol][r] = c_data[-2]['time']
+            time.sleep(0.5)
             
-        curr_state = "LONG" if fast_ema[-2] > slow_ema[-2] else "SHORT"
+        # Calculate initial signal for each configuration
+        for cfg in ensemble:
+            r = cfg["resolution"]
+            if r not in candles_by_res:
+                continue
+            closes = [c['close'] for c in candles_by_res[r]]
+            fast_ema = calculate_ema(closes, cfg["fast_period"])
+            slow_ema = calculate_ema(closes, cfg["slow_period"])
+            
+            if cfg["macro_multiplier"] > 0:
+                macro_ema = calculate_ema(closes, cfg["slow_period"] * cfg["macro_multiplier"])
+            else:
+                macro_ema = [None] * len(closes)
+                
+            atr_vals = calculate_atr(candles_by_res[r], 14)
+            if atr_vals and atr_vals[-1] is not None:
+                atr_sum += atr_vals[-1]
+                valid_atrs += 1
+                
+            if len(fast_ema) >= 2 and fast_ema[-2] is not None and slow_ema[-2] is not None:
+                f_closed = fast_ema[-2]
+                s_closed = slow_ema[-2]
+                m_closed = macro_ema[-2]
+                cl_closed = closes[-2]
+                
+                # Session check
+                is_valid_time = True
+                sess = cfg["session_name"]
+                if sess != '24_7':
+                    curr_min = (int(candles_by_res[r][-2]['time']) // 60) % 1440
+                    if sess == 'US':
+                        is_valid_time = 810 <= curr_min <= 1200
+                    elif sess == 'EU':
+                        is_valid_time = 420 <= curr_min <= 930
+                    elif sess == 'ASIA':
+                        is_valid_time = 0 <= curr_min <= 510
+                        
+                if is_valid_time:
+                    if f_closed > s_closed and (m_closed is None or cl_closed > m_closed):
+                        config_signals.append(1)
+                    elif f_closed < s_closed and (m_closed is None or cl_closed < m_closed):
+                        config_signals.append(-1)
+                    else:
+                        config_signals.append(0)
+                else:
+                    config_signals.append(0)
+                    
+        # Consensus state calculation
+        if config_signals:
+            total_signal = sum(config_signals)
+            threshold = max(1, len(ensemble) - 1)
+            if total_signal >= threshold:
+                curr_state = "LONG"
+            elif total_signal <= -threshold:
+                curr_state = "SHORT"
+            else:
+                curr_state = "FLAT"
+        else:
+            curr_state = "FLAT"
+            
         states[symbol] = curr_state
         trade_details[symbol] = {'entry_price': 0, 'avg_price': 0, 'pyramid_count': 0, 'highest': 0, 'lowest': float('inf'), 'stop_loss': 0}
-        last_evaluated_candle_time[symbol] = candles[-2]['time']
-        print(f"  {symbol}: Tracked. Current state is {GREEN if curr_state=='LONG' else RED}{curr_state}{RESET} (Fast: {fast_ema[-2]:.4f} | Slow: {slow_ema[-2]:.4f})")
-        time.sleep(1) # Pacing API requests
+        avg_atr_val = atr_sum / valid_atrs if valid_atrs > 0 else 0.0
+        print(f"  {symbol}: Tracked. Initial Consensus: {GREEN if curr_state=='LONG' else (RED if curr_state=='SHORT' else YELLOW)}{curr_state}{RESET} (Avg ATR: {avg_atr_val:.4f})")
         
     print(f"\n{GREEN}Initialization complete. Live monitoring active...{RESET}")
     time.sleep(1.5)
@@ -1919,160 +2517,212 @@ def run_live_monitor(symbols, resolution, poll_interval=15, trade=False, trade_s
             print(BOLD + CYAN + "└" + "─"*80 + "┘" + RESET)
             
             # Print status table
-            table_header = f" {'Symbol':<10} │ {'Price':<12} │ {'Fast':<10} │ {'Slow':<10} │ {'Macro':<10} │ {'ATR':<10} │ {'State':<12}"
+            table_header = f" {'Symbol':<10} │ {'Price':<12} │ {'Fast':<10} │ {'Slow':<10} │ {'Res':<10} │ {'ATR':<10} │ {'State':<12}"
             print(BOLD + table_header + RESET)
             print("─" * (len(table_header) + 1))
             
             for symbol in symbols:
-                fast_period = 9
-                slow_period = 21
-                opt_key = f"{symbol}_{resolution}"
-                if opt_key in opt_settings:
-                    fast_period = opt_settings[opt_key].get("fast_period", 9)
-                    slow_period = opt_settings[opt_key].get("slow_period", 21)
+                # Load ensemble config
+                ensemble = []
+                if symbol in opt_settings and "ensemble" in opt_settings[symbol]:
+                    ensemble = opt_settings[symbol]["ensemble"]
+                else:
+                    fast = opt_settings.get(f"{symbol}_{resolution}", {}).get("fast_period", 9)
+                    slow = opt_settings.get(f"{symbol}_{resolution}", {}).get("slow_period", 21)
+                    macro = opt_settings.get(f"{symbol}_{resolution}", {}).get("macro_multiplier", 4)
+                    session = opt_settings.get(f"{symbol}_{resolution}", {}).get("session_name", '24_7')
+                    ensemble = [{
+                        "resolution": resolution,
+                        "fast_period": fast,
+                        "slow_period": slow,
+                        "session_name": session,
+                        "macro_multiplier": macro
+                    }]
                     
-                req_candles = (slow_period * 4) + 45
-                
-                if symbol not in states or states[symbol] == "ERROR":
-                    # Try to re-initialize
-                    candles, err = fetch_candle_data(symbol, resolution, req_candles)
-                    if not err and candles and len(candles) >= 2:
-                        closes = [c['close'] for c in candles]
-                        fast_ema = calculate_ema(closes, fast_period)
-                        slow_ema = calculate_ema(closes, slow_period)
-                        macro_ema = calculate_ema(closes, slow_period * 4)
-                        if len(fast_ema) >= slow_period + 2 and fast_ema[-2] is not None and slow_ema[-2] is not None and macro_ema[-2] is not None:
-                            # Advanced MTF Entry
-                            if fast_ema[-2] > slow_ema[-2] and closes[-2] > macro_ema[-2]:
-                                states[symbol] = "LONG"
-                            elif fast_ema[-2] < slow_ema[-2] and closes[-2] < macro_ema[-2]:
-                                states[symbol] = "SHORT"
-                            else:
-                                states[symbol] = "FLAT"
-                            last_evaluated_candle_time[symbol] = candles[-2]['time']
+                # Fetch candles for unique resolutions
+                unique_res = list(set([cfg["resolution"] for cfg in ensemble]))
+                candles_by_res = {}
+                fetch_failed = False
+                for r in unique_res:
+                    req_candles = 200
+                    c_data, err = fetch_candle_data(symbol, r, req_candles)
+                    if not err and c_data and len(c_data) >= 2:
+                        candles_by_res[r] = c_data
+                    else:
+                        fetch_failed = True
+                    time.sleep(0.3)
                     
-                if symbol not in states or states[symbol] == "ERROR":
+                if fetch_failed or not candles_by_res:
                     print(f" {symbol:<10} │ {RED}{'ERR_FETCH':<12}{RESET} │ {'-':<10} │ {'-':<10} │ {'-':<10} │ {'-':<10} │ {RED}{'ERROR':<12}{RESET}")
                     states[symbol] = "ERROR"
                     continue
                     
-                # Fetch latest candle data
-                candles, err = fetch_candle_data(symbol, resolution, req_candles)
-                if err or not candles or len(candles) < 2:
-                    print(f" {symbol:<10} │ {YELLOW}{'STALE':<12}{RESET} │ {'-':<10} │ {'-':<10} │ {'-':<10} │ {'-':<10} │ {states[symbol]:<12}")
-                    continue
-                    
-                closes = [c['close'] for c in candles]
-                fast_ema = calculate_ema(closes, fast_period)
-                slow_ema = calculate_ema(closes, slow_period)
-                macro_ema = calculate_ema(closes, slow_period * 4)
-                atr_vals = calculate_atr(candles, 14)
+                # Calculate average ATR & latest close (from first config/resolution)
+                base_res = ensemble[0]["resolution"]
+                latest_close = candles_by_res[base_res][-1]['close']
+                atr_sum = 0
+                valid_atrs = 0
+                for r in unique_res:
+                    if r in candles_by_res:
+                        atr_vals = calculate_atr(candles_by_res[r], 14)
+                        if atr_vals and atr_vals[-1] is not None:
+                            atr_sum += atr_vals[-1]
+                            valid_atrs += 1
+                curr_atr = atr_sum / valid_atrs if valid_atrs > 0 else 0.0
                 
-                f_val = fast_ema[-1]
-                s_val = slow_ema[-1]
-                m_val = macro_ema[-1]
-                curr_atr = atr_vals[-1]
-                latest_close = closes[-1]
-                
-                if m_val is None:
-                    macro_str = "-"
-                    macro_color = RESET
-                else:
-                    is_bull = latest_close > m_val
-                    macro_str = "BULL" if is_bull else "BEAR"
-                    macro_color = GREEN if is_bull else RED
-                
-                # Check for crossover only when a new candle closes
-                closed_candle_time = candles[-2]['time']
-                if symbol not in last_evaluated_candle_time:
-                    last_evaluated_candle_time[symbol] = closed_candle_time
-                    
-                if closed_candle_time > last_evaluated_candle_time[symbol]:
-                    f_closed = fast_ema[-2]
-                    s_closed = slow_ema[-2]
-                    m_closed = macro_ema[-2]
-                    cl_closed = closes[-2]
-                    
-                    if f_closed is not None and s_closed is not None and m_closed is not None:
-                        new_state = states[symbol]
+                # Check for new closed candles in any resolution to trigger crossover check
+                has_new_candle = False
+                for r in unique_res:
+                    closed_candle_time = candles_by_res[r][-2]['time']
+                    if r not in last_evaluated_candle_time[symbol]:
+                        last_evaluated_candle_time[symbol][r] = closed_candle_time
+                        has_new_candle = True
+                    elif closed_candle_time > last_evaluated_candle_time[symbol][r]:
+                        last_evaluated_candle_time[symbol][r] = closed_candle_time
+                        has_new_candle = True
                         
-                        if f_closed > s_closed and cl_closed > m_closed:
+                f_disp = f"{ensemble[0]['fast_period']}"
+                s_disp = f"{ensemble[0]['slow_period']}"
+                m_disp = f"{ensemble[0]['resolution']}"
+                pos_color = GREEN if states[symbol] == "LONG" else (RED if states[symbol] == "SHORT" else YELLOW)
+                print(f" {symbol:<10} │ {latest_close:<12.4f} │ {f_disp:<10} │ {s_disp:<10} │ {m_disp:<10} │ {curr_atr:<10.4f} │ {pos_color}{states[symbol]:<12}{RESET}")
+                
+                # Perform consensus evaluation if a new candle closed
+                if has_new_candle:
+                    config_signals = []
+                    cl_closed_val = None
+                    for cfg in ensemble:
+                        r = cfg["resolution"]
+                        if r not in candles_by_res:
+                            continue
+                        closes = [c['close'] for c in candles_by_res[r]]
+                        fast_ema = calculate_ema(closes, cfg["fast_period"])
+                        slow_ema = calculate_ema(closes, cfg["slow_period"])
+                        if cfg["macro_multiplier"] > 0:
+                            macro_ema = calculate_ema(closes, cfg["slow_period"] * cfg["macro_multiplier"])
+                        else:
+                            macro_ema = [None] * len(closes)
+                            
+                        if len(fast_ema) >= 2 and fast_ema[-2] is not None and slow_ema[-2] is not None:
+                            f_closed = fast_ema[-2]
+                            s_closed = slow_ema[-2]
+                            m_closed = macro_ema[-2]
+                            cl_closed = closes[-2]
+                            if cl_closed_val is None:
+                                cl_closed_val = cl_closed
+                                
+                            is_valid_time = True
+                            sess = cfg["session_name"]
+                            if sess != '24_7':
+                                curr_min = (int(candles_by_res[r][-2]['time']) // 60) % 1440
+                                if sess == 'US':
+                                    is_valid_time = 810 <= curr_min <= 1200
+                                elif sess == 'EU':
+                                    is_valid_time = 420 <= curr_min <= 930
+                                elif sess == 'ASIA':
+                                    is_valid_time = 0 <= curr_min <= 510
+                                    
+                            if is_valid_time:
+                                if f_closed > s_closed and (m_closed is None or cl_closed > m_closed):
+                                    config_signals.append(1)
+                                elif f_closed < s_closed and (m_closed is None or cl_closed < m_closed):
+                                    config_signals.append(-1)
+                                else:
+                                    config_signals.append(0)
+                            else:
+                                config_signals.append(0)
+                                
+                    if config_signals:
+                        total_signal = sum(config_signals)
+                        threshold = max(1, len(ensemble) - 1)
+                        if total_signal >= threshold:
                             new_state = "LONG"
-                        elif f_closed < s_closed and cl_closed < m_closed:
+                        elif total_signal <= -threshold:
                             new_state = "SHORT"
-                            
-                        if new_state != states[symbol]:
-                            print("\a", end="")
-                            alert_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            alerts.append(f"[{alert_time}] ★ {symbol} crossed over to {new_state} at {closes[-2]:.4f} USD")
-                            states[symbol] = new_state
-                            td = trade_details.setdefault(symbol, {'entry_price': 0, 'avg_price': 0, 'pyramid_count': 0, 'highest': 0, 'lowest': float('inf'), 'stop_loss': 0})
-                            
-                            if trade:
-                                if new_state == "LONG":
-                                    print(f"\n{GREEN}[Trade Action] LONG crossover triggered for {symbol}.{RESET}")
-                                    td['entry_price'] = cl_closed
-                                    td['avg_price'] = cl_closed
-                                    td['highest'] = cl_closed
-                                    td['stop_loss'] = cl_closed - (curr_atr * 2)
-                                    td['pyramid_count'] = 0
-                                    
-                                    close_res, close_err = close_position_if_any(symbol, account_idx=short_acc)
-                                    if close_err:
-                                        print(f"  {RED}[ERROR] Close short position failed: {close_err}{RESET}")
-                                    
-                                    # Fractional Kelly Sizing
-                                    balance = get_live_usdt_balance(account_idx=long_acc)
-                                    sl_distance = curr_atr * 2
-                                    dynamic_size = trade_size
-                                    actual_size = max(1, int(dynamic_size))
-                                    if balance > 0 and sl_distance > 0:
-                                        dynamic_size = (balance * 0.02) / sl_distance
-                                        print(f"  {CYAN}Calculated Kelly Lot Size: {dynamic_size:.3f} (Bal: ${balance:.2f}, Risk: 2%, SL: ${sl_distance:.2f}){RESET}")
-                                        
-                                        actual_size = max(1, int(dynamic_size))
-                                        pct_risk = (actual_size * sl_distance) / balance
-                                        if pct_risk > 0.05:
-                                            print(f"  {RED}[WARNING: Burner Phase / Over-Leveraged] Due to low balance, this trade will risk {pct_risk*100.0:.1f}% of equity instead of 2.0% Kelly limits!{RESET}")
-                                    
-                                    order_res, order_err = place_market_order(symbol, "buy", size=actual_size, account_idx=long_acc)
-                                    if order_err:
-                                        print(f"  {RED}[ERROR] Order placement failed: {order_err}{RESET}")
-                                    else:
-                                        print(f"  {GREEN}[SUCCESS] LONG order placed successfully.{RESET}")
-                                elif new_state == "SHORT":
-                                    print(f"\n{RED}[Trade Action] SHORT crossover triggered for {symbol}.{RESET}")
-                                    td['entry_price'] = cl_closed
-                                    td['avg_price'] = cl_closed
-                                    td['lowest'] = cl_closed
-                                    td['stop_loss'] = cl_closed + (curr_atr * 2)
-                                    td['pyramid_count'] = 0
-                                    
-                                    close_res, close_err = close_position_if_any(symbol, account_idx=long_acc)
-                                    if close_err:
-                                        print(f"  {RED}[ERROR] Close long position failed: {close_err}{RESET}")
-                                    
-                                    # Fractional Kelly Sizing
-                                    balance = get_live_usdt_balance(account_idx=short_acc)
-                                    sl_distance = curr_atr * 2
-                                    dynamic_size = trade_size
-                                    actual_size = max(1, int(dynamic_size))
-                                    if balance > 0 and sl_distance > 0:
-                                        dynamic_size = (balance * 0.02) / sl_distance
-                                        print(f"  {CYAN}Calculated Kelly Lot Size: {dynamic_size:.3f} (Bal: ${balance:.2f}, Risk: 2%, SL: ${sl_distance:.2f}){RESET}")
-                                        
-                                        actual_size = max(1, int(dynamic_size))
-                                        pct_risk = (actual_size * sl_distance) / balance
-                                        if pct_risk > 0.05:
-                                            print(f"  {RED}[WARNING: Burner Phase / Over-Leveraged] Due to low balance, this trade will risk {pct_risk*100.0:.1f}% of equity instead of 2.0% Kelly limits!{RESET}")
-                                        
-                                    order_res, order_err = place_market_order(symbol, "sell", size=actual_size, account_idx=short_acc)
-                                    if order_err:
-                                        print(f"  {RED}[ERROR] Order placement failed: {order_err}{RESET}")
-                                    else:
-                                        print(f"  {GREEN}[SUCCESS] SHORT order placed successfully.{RESET}")
+                        else:
+                            new_state = "FLAT"
+                    else:
+                        new_state = "FLAT"
                         
-                        last_evaluated_candle_time[symbol] = closed_candle_time
+                    # Handle state transition
+                    if new_state != states[symbol]:
+                        print("\a", end="")
+                        alert_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        cl_disp_price = cl_closed_val if cl_closed_val is not None else latest_close
+                        alerts.append(f"[{alert_time}] ★ {symbol} consensus crossed over to {new_state} at {cl_disp_price:.4f} USD")
+                        states[symbol] = new_state
+                        td = trade_details.setdefault(symbol, {'entry_price': 0, 'avg_price': 0, 'pyramid_count': 0, 'highest': 0, 'lowest': float('inf'), 'stop_loss': 0})
+                        
+                        if trade:
+                            if new_state == "LONG":
+                                print(f"\n{GREEN}[Trade Action] LONG consensus crossover triggered for {symbol}.{RESET}")
+                                td['entry_price'] = cl_disp_price
+                                td['avg_price'] = cl_disp_price
+                                td['highest'] = cl_disp_price
+                                td['stop_loss'] = cl_disp_price - (curr_atr * 2)
+                                td['pyramid_count'] = 0
+                                
+                                close_res, close_err = close_position_if_any(symbol, account_idx=short_acc)
+                                if close_err:
+                                    print(f"  {RED}[ERROR] Close short position failed: {close_err}{RESET}")
+                                    
+                                # Fractional Kelly Sizing with Contract Value mapping
+                                balance = get_live_usdt_balance(account_idx=long_acc)
+                                sl_distance = curr_atr * 2
+                                contract_val = get_contract_value(symbol)
+                                dynamic_size = trade_size
+                                actual_size = max(1, int(dynamic_size))
+                                if balance > 0 and sl_distance > 0:
+                                    dynamic_size = (balance * 0.02) / (sl_distance * contract_val)
+                                    print(f"  {CYAN}Calculated Kelly Lot Size: {dynamic_size:.3f} (Bal: ${balance:.2f}, Risk: 2%, SL: ${sl_distance:.2f}, Mult: {contract_val}){RESET}")
+                                    actual_size = max(1, int(dynamic_size))
+                                    pct_risk = (actual_size * sl_distance * contract_val) / balance
+                                    if pct_risk > 0.05:
+                                        print(f"  {RED}[WARNING: Over-Leveraged] Risks {pct_risk*100.0:.1f}% of equity!{RESET}")
+                                        
+                                order_res, order_err = place_market_order(symbol, "buy", size=actual_size, account_idx=long_acc)
+                                if order_err:
+                                    print(f"  {RED}[ERROR] Order placement failed: {order_err}{RESET}")
+                                else:
+                                    print(f"  {GREEN}[SUCCESS] LONG order placed successfully.{RESET}")
+                                    
+                            elif new_state == "SHORT":
+                                print(f"\n{RED}[Trade Action] SHORT consensus crossover triggered for {symbol}.{RESET}")
+                                td['entry_price'] = cl_disp_price
+                                td['avg_price'] = cl_disp_price
+                                td['lowest'] = cl_disp_price
+                                td['stop_loss'] = cl_disp_price + (curr_atr * 2)
+                                td['pyramid_count'] = 0
+                                
+                                close_res, close_err = close_position_if_any(symbol, account_idx=long_acc)
+                                if close_err:
+                                    print(f"  {RED}[ERROR] Close long position failed: {close_err}{RESET}")
+                                    
+                                # Fractional Kelly Sizing with Contract Value mapping
+                                balance = get_live_usdt_balance(account_idx=short_acc)
+                                sl_distance = curr_atr * 2
+                                contract_val = get_contract_value(symbol)
+                                dynamic_size = trade_size
+                                actual_size = max(1, int(dynamic_size))
+                                if balance > 0 and sl_distance > 0:
+                                    dynamic_size = (balance * 0.02) / (sl_distance * contract_val)
+                                    print(f"  {CYAN}Calculated Kelly Lot Size: {dynamic_size:.3f} (Bal: ${balance:.2f}, Risk: 2%, SL: ${sl_distance:.2f}, Mult: {contract_val}){RESET}")
+                                    actual_size = max(1, int(dynamic_size))
+                                    pct_risk = (actual_size * sl_distance * contract_val) / balance
+                                    if pct_risk > 0.05:
+                                        print(f"  {RED}[WARNING: Over-Leveraged] Risks {pct_risk*100.0:.1f}% of equity!{RESET}")
+                                        
+                                order_res, order_err = place_market_order(symbol, "sell", size=actual_size, account_idx=short_acc)
+                                if order_err:
+                                    print(f"  {RED}[ERROR] Order placement failed: {order_err}{RESET}")
+                                else:
+                                    print(f"  {GREEN}[SUCCESS] SHORT order placed successfully.{RESET}")
+                                    
+                            elif new_state == "FLAT":
+                                print(f"\n{YELLOW}[Trade Action] FLAT consensus crossover triggered for {symbol}. Closing all positions.{RESET}")
+                                close_position_if_any(symbol, account_idx=long_acc)
+                                close_position_if_any(symbol, account_idx=short_acc)
+                                td['entry_price'] = 0
                 
                 # --- LIVE STATE ENGINE: Pyramiding & Trailing Stops ---
                 td = trade_details[symbol]
@@ -2097,9 +2747,10 @@ def run_live_monitor(symbols, resolution, poll_interval=15, trade=False, trade_s
                         if trade:
                             balance = get_live_usdt_balance(account_idx=long_acc)
                             sl_distance = curr_atr * 2
+                            contract_val = get_contract_value(symbol)
                             dynamic_size = trade_size
                             if balance > 0 and sl_distance > 0:
-                                dynamic_size = (balance * 0.01) / sl_distance # Half-Kelly for Pyramids
+                                dynamic_size = (balance * 0.01) / (sl_distance * contract_val) # Half-Kelly for Pyramids
                             actual_size = max(1, int(dynamic_size))
                             order_res, order_err = place_market_order(symbol, "buy", size=actual_size, account_idx=long_acc)
                             if order_err:
@@ -2128,9 +2779,10 @@ def run_live_monitor(symbols, resolution, poll_interval=15, trade=False, trade_s
                         if trade:
                             balance = get_live_usdt_balance(account_idx=short_acc)
                             sl_distance = curr_atr * 2
+                            contract_val = get_contract_value(symbol)
                             dynamic_size = trade_size
                             if balance > 0 and sl_distance > 0:
-                                dynamic_size = (balance * 0.01) / sl_distance # Half-Kelly for Pyramids
+                                dynamic_size = (balance * 0.01) / (sl_distance * contract_val) # Half-Kelly for Pyramids
                             actual_size = max(1, int(dynamic_size))
                             order_res, order_err = place_market_order(symbol, "sell", size=actual_size, account_idx=short_acc)
                             if order_err:
@@ -2138,17 +2790,6 @@ def run_live_monitor(symbols, resolution, poll_interval=15, trade=False, trade_s
                         td['avg_price'] = (td['avg_price'] + latest_close) / 2
                         td['pyramid_count'] += 1
                 # ------------------------------------------------------
-                
-                if states[symbol] == "LONG":
-                    pos_color = GREEN
-                elif states[symbol] == "SHORT":
-                    pos_color = RED
-                else:
-                    pos_color = YELLOW
-                    
-                f_disp = f"{f_val:.2f}" if f_val is not None else "-"
-                s_disp = f"{s_val:.2f}" if s_val is not None else "-"
-                print(f" {symbol:<10} │ {latest_close:<12.4f} │ {f_disp:<10} │ {s_disp:<10} │ {macro_color}{macro_str:<10}{RESET} │ {curr_atr:<10.4f} │ {pos_color}{states[symbol]:<12}{RESET}")
                 
                 # Pace API requests by 1 second to prevent rate limiting
                 time.sleep(1)
@@ -2170,6 +2811,86 @@ def run_live_monitor(symbols, resolution, poll_interval=15, trade=False, trade_s
             
     except KeyboardInterrupt:
         print(f"\n{YELLOW}Monitoring stopped by user.{RESET}")
+
+def select_symbols_interactive():
+    """
+    Interactively select symbols via menu supporting single, multi-select, and custom comma-separated entries.
+    Returns (symbols, label) or (None, None) if cancelled/invalid.
+    """
+    clear_screen()
+    print(BOLD + CYAN + "┌" + "─"*50 + "┐" + RESET)
+    print(BOLD + CYAN + "│" + f" SELECT ASSETS TO MONITOR ".center(50) + "│" + RESET)
+    print(BOLD + CYAN + "├" + "─"*50 + "┤" + RESET)
+    print(BOLD + CYAN + "│" + f"  1. Monitor All Preconfigured Assets".ljust(48) + "│" + RESET)
+    print(BOLD + CYAN + "│" + f"  2. Select / Multi-Select Preconfigured Assets".ljust(48) + "│" + RESET)
+    print(BOLD + CYAN + "│" + f"  3. Enter Custom Symbol(s) (Comma-separated)".ljust(48) + "│" + RESET)
+    print(BOLD + CYAN + "└" + "─"*50 + "┘" + RESET)
+    
+    choice = input(BOLD + "\nSelect choice (1-3, Default 1): " + RESET).strip()
+    if not choice:
+        choice = '1'
+        
+    if choice == '1':
+        return [PRECONFIGURED_ASSETS[k]['symbol'] for k in sorted(PRECONFIGURED_ASSETS.keys(), key=int)], "ALL"
+    elif choice == '2':
+        clear_screen()
+        print(BOLD + CYAN + "┌" + "─"*50 + "┐" + RESET)
+        print(BOLD + CYAN + "│" + f" MULTI-SELECT PRECONFIGURED ASSETS ".center(50) + "│" + RESET)
+        print(BOLD + CYAN + "├" + "─"*50 + "┤" + RESET)
+        for k, v in sorted(PRECONFIGURED_ASSETS.items(), key=lambda x: int(x[0])):
+            line = f"  {k}. {v['name']}"
+            print(BOLD + CYAN + "│" + f"{line:<48}" + "│" + RESET)
+        print(BOLD + CYAN + "└" + "─"*50 + "┘" + RESET)
+        print(f"\n{YELLOW}[Help: Enter numbers separated by commas (e.g. 1,3,5) or range (e.g. 1-4)]{RESET}")
+        selection = input(BOLD + "Select assets: " + RESET).strip()
+        if not selection:
+            return None, None
+            
+        selected_keys = set()
+        parts = selection.split(',')
+        for part in parts:
+            part = part.strip()
+            if '-' in part:
+                try:
+                    start, end = part.split('-')
+                    for num in range(int(start), int(end) + 1):
+                        if str(num) in PRECONFIGURED_ASSETS:
+                            selected_keys.add(str(num))
+                except ValueError:
+                    pass
+            elif part in PRECONFIGURED_ASSETS:
+                selected_keys.add(part)
+                
+        if not selected_keys:
+            print(f"{RED}No valid assets selected.{RESET}")
+            time.sleep(1.5)
+            return None, None
+            
+        symbols = [PRECONFIGURED_ASSETS[k]['symbol'] for k in sorted(list(selected_keys), key=int)]
+        label = ",".join(symbols) if len(symbols) < 4 else f"{len(symbols)}_ASSETS"
+        return symbols, label
+        
+    elif choice == '3':
+        print(f"\n{YELLOW}Popular symbols on Delta Exchange:{RESET}")
+        print(f"  {CYAN}Cryptocurrencies:{RESET} BTCUSD, ETHUSD, SOLUSD, XRPUSD, BNBUSD, AVAXUSD, SUIUSD, DOGEUSD, PEPEUSD")
+        print(f"  {CYAN}Stock Indices:{RESET}    SPYXUSD, QQQXUSD")
+        print(f"  {CYAN}Commodities:{RESET}      XAUTUSD, SLVONUSD\n")
+        sym_input = input(BOLD + "Enter symbol(s) (e.g. BTCUSD, ETHUSD): " + RESET).strip().upper()
+        if not sym_input:
+            print("Invalid input.")
+            time.sleep(1.5)
+            return None, None
+            
+        symbols = [s.strip() for s in sym_input.split(',') if s.strip()]
+        if not symbols:
+            print("Invalid input.")
+            time.sleep(1.5)
+            return None, None
+            
+        label = ",".join(symbols) if len(symbols) < 4 else f"{len(symbols)}_ASSETS"
+        return symbols, label
+        
+    return None, None
 
 def interactive_mode():
     """Run interactive CLI menu."""
@@ -2301,31 +3022,8 @@ def interactive_mode():
                 input()
                 continue
         elif choice == '9':
-            clear_screen()
-            print(BOLD + CYAN + "┌" + "─"*50 + "┐" + RESET)
-            print(BOLD + CYAN + "│" + f" SELECT ASSETS TO MONITOR ".center(50) + "│" + RESET)
-            print(BOLD + CYAN + "├" + "─"*50 + "┤" + RESET)
-            print(BOLD + CYAN + "│" + f"  1. Monitor All Preconfigured Assets".ljust(48) + "│" + RESET)
-            print(BOLD + CYAN + "│" + f"  2. Monitor Specific Custom Symbol".ljust(48) + "│" + RESET)
-            print(BOLD + CYAN + "└" + "─"*50 + "┘" + RESET)
-            
-            mon_choice = input(BOLD + "\nSelect choice (1-2): " + RESET).strip()
-            symbols = []
-            if mon_choice == '1':
-                symbols = [PRECONFIGURED_ASSETS[k]['symbol'] for k in sorted(PRECONFIGURED_ASSETS.keys(), key=int)]
-            elif mon_choice == '2':
-                print(f"\n{YELLOW}Popular symbols on Delta Exchange:{RESET}")
-                print(f"  {CYAN}Cryptocurrencies:{RESET} BTCUSD, ETHUSD, SOLUSD, XRPUSD, BNBUSD, AVAXUSD, SUIUSD, DOGEUSD, PEPEUSD")
-                print(f"  {CYAN}Stock Indices:{RESET}    SPYXUSD, QQQXUSD")
-                print(f"  {CYAN}Commodities:{RESET}      XAUTUSD, SLVONUSD\n")
-                sym = input(BOLD + "Enter symbol to monitor: " + RESET).strip().upper()
-                if sym:
-                    symbols = [sym]
-                else:
-                    print("Invalid Symbol. Press Enter to return.")
-                    input()
-                    continue
-            else:
+            symbols, label = select_symbols_interactive()
+            if not symbols:
                 continue
 
             clear_screen()
@@ -2453,16 +3151,8 @@ def interactive_mode():
                     time.sleep(1)
             continue
         elif choice == '11':
-            clear_screen()
-            print(BOLD + CYAN + "┌" + "─"*50 + "┐" + RESET)
-            print(BOLD + CYAN + "│" + f" GENETIC ALGORITHM OPTIMIZER ".center(50) + "│" + RESET)
-            print(BOLD + CYAN + "└" + "─"*50 + "┘" + RESET)
-            print(f"\n{YELLOW}Popular symbols on Delta Exchange:{RESET}")
-            print(f"  {CYAN}Cryptocurrencies:{RESET} BTCUSD, ETHUSD, SOLUSD, XRPUSD, BNBUSD, AVAXUSD, SUIUSD, DOGEUSD, PEPEUSD")
-            print(f"  {CYAN}Stock Indices:{RESET}    SPYXUSD, QQQXUSD")
-            print(f"  {CYAN}Commodities:{RESET}      XAUTUSD, SLVONUSD\n")
-            sym = input(BOLD + "Enter symbol to optimize: " + RESET).strip().upper()
-            if not sym:
+            symbols_to_opt, label = select_symbols_interactive()
+            if not symbols_to_opt:
                 continue
                 
             print(BOLD + CYAN + "┌" + "─"*50 + "┐" + RESET)
@@ -2474,9 +3164,15 @@ def interactive_mode():
                 print(BOLD + CYAN + "│" + f"{line:<48}" + "│" + RESET)
             print(BOLD + CYAN + "└" + "─"*50 + "┘" + RESET)
             
-            print(f"\n{YELLOW}[Help: Select the timeframe/candle size. '1h' or '4h' is recommended.]{RESET}")
-            res_choice = input(BOLD + "Select resolution (1-8, Default 1d): " + RESET).strip()
-            resolution = parse_resolution_input(res_choice, '1d')
+            print(f"\n{YELLOW}[Help: Select the timeframe/candle size(s). Comma-separated lists are allowed (e.g. '1h,4h' or '5,6').]{RESET}")
+            res_choice = input(BOLD + "Select resolution(s) (1-8, Default 1d): " + RESET).strip()
+            res_choices = [r.strip() for r in res_choice.split(',') if r.strip()]
+            resolutions_to_opt = []
+            if not res_choices:
+                resolutions_to_opt = ['1d']
+            else:
+                for rc in res_choices:
+                    resolutions_to_opt.append(parse_resolution_input(rc, '1d', is_menu_choice=True))
                     
             print(f"\n{YELLOW}[Help: META tuning optimizes the optimizer's speed and depth. It takes longer but is more thorough. Recommended: 'n'.]{RESET}")
             meta_choice = input(BOLD + "Run META hyperparameter optimization first? (y/N): " + RESET).strip().lower()
@@ -2491,14 +3187,20 @@ def interactive_mode():
                     "Number of candidate configurations per cycle. Recommended 10, Max 30.",
                     10, 5, 30
                 )
-                run_meta_genetic_optimization(sym, resolution, meta_gens, meta_pop)
+                for s_opt in symbols_to_opt:
+                    for r_opt in resolutions_to_opt:
+                        print(BOLD + GREEN + f"\n>>> Starting Meta-GA Hyperparameter Tuning for {s_opt} ({r_opt}) <<<" + RESET)
+                        run_meta_genetic_optimization(s_opt, r_opt, meta_gens, meta_pop)
             else:
                 generations = get_validated_int_input(
                     "Enter number of GA generations (Default 15): ",
                     "Evolution cycles for finding best EMAs. Recommended 15, Max 50.",
                     15, 1, 50
                 )
-                run_genetic_optimization(sym, resolution, generations)
+                for s_opt in symbols_to_opt:
+                    for r_opt in resolutions_to_opt:
+                        print(BOLD + GREEN + f"\n>>> Starting Strategy Optimization for {s_opt} ({r_opt}) <<<" + RESET)
+                        run_genetic_optimization(s_opt, r_opt, generations)
                 
             input(BOLD + "\nPress Enter to return to menu... " + RESET)
             continue
@@ -2517,29 +3219,8 @@ def interactive_mode():
                 
                 sub_opt = input(BOLD + "\nSelect choice (1-3, B): " + RESET).strip().upper()
                 if sub_opt == '1':
-                    clear_screen()
-                    print(BOLD + CYAN + "┌" + "─"*50 + "┐" + RESET)
-                    print(BOLD + CYAN + "│" + f" START BACKGROUND MONITOR ".center(50) + "│" + RESET)
-                    print(BOLD + CYAN + "├" + "─"*50 + "┤" + RESET)
-                    print(BOLD + CYAN + "│" + f"  1. Monitor All Preconfigured Assets".ljust(48) + "│" + RESET)
-                    print(BOLD + CYAN + "│" + f"  2. Monitor Specific Custom Symbol".ljust(48) + "│" + RESET)
-                    print(BOLD + CYAN + "└" + "─"*50 + "┘" + RESET)
-                    
-                    mon_choice = input(BOLD + "\nSelect choice (1-2): " + RESET).strip()
-                    symbols = []
-                    if mon_choice == '1':
-                        symbols = [PRECONFIGURED_ASSETS[k]['symbol'] for k in sorted(PRECONFIGURED_ASSETS.keys(), key=int)]
-                    elif mon_choice == '2':
-                        print(f"\n{YELLOW}Popular symbols on Delta Exchange:{RESET}")
-                        print(f"  {CYAN}Cryptocurrencies:{RESET} BTCUSD, ETHUSD, SOLUSD, XRPUSD, BNBUSD, AVAXUSD, SUIUSD, DOGEUSD, PEPEUSD")
-                        print(f"  {CYAN}Stock Indices:{RESET}    SPYXUSD, QQQXUSD")
-                        print(f"  {CYAN}Commodities:{RESET}      XAUTUSD, SLVONUSD\n")
-                        sym = input(BOLD + "Enter symbol: " + RESET).strip().upper()
-                        if sym:
-                            symbols = [sym]
+                    symbols, label = select_symbols_interactive()
                     if not symbols:
-                        print("Invalid selection.")
-                        time.sleep(1.5)
                         continue
                         
                     print(BOLD + CYAN + "┌" + "─"*50 + "┐" + RESET)
@@ -2553,7 +3234,7 @@ def interactive_mode():
                     
                     print(f"\n{YELLOW}[Help: Select the timeframe/candle size. '1h' or '4h' is recommended.]{RESET}")
                     res_choice = input(BOLD + "Select resolution (1-8, Default 1m): " + RESET).strip()
-                    resolution = parse_resolution_input(res_choice, '1m')
+                    resolution = parse_resolution_input(res_choice, '1m', is_menu_choice=True)
                             
                     poll_interval = get_validated_int_input(
                         "Enter polling interval in seconds (5-300, Default 15): ",
@@ -2562,10 +3243,10 @@ def interactive_mode():
                     )
                         
                     daemon_args = []
-                    if mon_choice == '1':
+                    if label == "ALL":
                         daemon_args += ["--symbol", "ALL"]
                     else:
-                        daemon_args += ["--symbol", symbols[0]]
+                        daemon_args += ["--symbol", ",".join(symbols)]
                     daemon_args += ["--resolution", resolution, "--monitor", "--poll-interval", str(poll_interval)]
                     
                     api_active = bool(os.getenv("DELTA_API_KEY_1") or os.getenv("DELTA_API_KEY") or os.getenv("DELTA_API_KEY_3"))
@@ -2596,7 +3277,20 @@ def interactive_mode():
             continue
             
         elif choice == '13':
-            run_autopilot_setup('1h', 10)
+            clear_screen()
+            print(BOLD + MAGENTA + "┌" + "─"*50 + "┐" + RESET)
+            print(BOLD + MAGENTA + "│" + " SELECT AUTOPILOT RESOLUTION ".center(50) + "│" + RESET)
+            print(BOLD + MAGENTA + "├" + "─"*50 + "┤" + RESET)
+            sorted_resolutions = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w']
+            for idx, res in enumerate(sorted_resolutions, 1):
+                line = f"  {idx}. {res} ({SUPPORTED_RESOLUTIONS[res]})"
+                print(BOLD + MAGENTA + "│" + f"{line:<48}" + "│" + RESET)
+            print(BOLD + MAGENTA + "└" + "─"*50 + "┘" + RESET)
+            
+            res_choice = input(BOLD + "\nSelect autopilot base resolution (1-8, Default 1h): " + RESET).strip()
+            resolution = parse_resolution_input(res_choice, '1h', is_menu_choice=True)
+            
+            run_autopilot_setup(resolution, 10)
             input(BOLD + "\nPress Enter to return to menu... " + RESET)
             continue
             
@@ -2618,7 +3312,7 @@ def interactive_mode():
         print(BOLD + CYAN + "└" + "─"*50 + "┘" + RESET)
         
         res_choice = input(BOLD + "\nSelect resolution (1-8, Default 1d): " + RESET).strip()
-        resolution = parse_resolution_input(res_choice, '1d')
+        resolution = parse_resolution_input(res_choice, '1d', is_menu_choice=True)
 
         if symbol == "ALL":
             print(f"\n{CYAN}Fetching data for all assets...{RESET}")
@@ -2689,7 +3383,7 @@ def main():
     load_env()
     parser = argparse.ArgumentParser(description="Fetch and monitor candles from Delta Exchange in CMD.")
     parser.add_argument('-s', '--symbol', type=str, help="Delta Exchange trading symbol (e.g. SPYXUSD, QQQXUSD, XAUTUSD, SOLUSD, XRPUSD) or 'ALL' to show all")
-    parser.add_argument('-r', '--resolution', type=str, default='1d', choices=list(SUPPORTED_RESOLUTIONS.keys()), help='Candle resolution timeframe (default: 1d)')
+    parser.add_argument('-r', '--resolution', type=str, default='1d', help='Candle resolution timeframe(s), comma-separated (default: 1d)')
     parser.add_argument('-c', '--candles', type=int, default=15, help='Number of candles to load and display (default: 15)')
     parser.add_argument('--show-candles', action='store_true', help='Show candlestick chart and history table for single symbols')
     parser.add_argument('--ema-analysis', action='store_true', help='Run EMA Crossover Stop and Reverse analysis')
@@ -2722,17 +3416,32 @@ def main():
         clean_args = [arg for arg in sys.argv[1:] if arg not in ["--start", "--stop", "--status"]]
         start_daemon(clean_args)
         time.sleep(1)
-        os._exit(0)
+        sys.exit(0)
 
     # 2. Strategy Optimization
     if args.optimize or args.meta_optimize:
-        if not args.symbol or args.symbol.upper() == 'ALL':
-            print(f"{RED}Error: You must specify a single specific symbol (e.g. -s SOLUSD) to run optimization.{RESET}")
+        if not args.symbol:
+            print(f"{RED}Error: You must specify a symbol (e.g. -s SOLUSD or -s SOLUSD,XRPUSD or -s ALL) to run optimization.{RESET}")
             sys.exit(1)
-        if args.meta_optimize:
-            run_meta_genetic_optimization(args.symbol.upper(), args.resolution, args.meta_generations, args.meta_pop_size)
+        
+        raw_symbol = args.symbol.upper()
+        symbols_to_opt = []
+        
+        if raw_symbol == 'ALL':
+            symbols_to_opt = [v['symbol'] for k, v in sorted(PRECONFIGURED_ASSETS.items(), key=lambda x: int(x[0]))]
         else:
-            run_genetic_optimization(args.symbol.upper(), args.resolution, args.opt_generations)
+            symbols_to_opt = [s.strip() for s in raw_symbol.split(',') if s.strip()]
+            
+        raw_res = args.resolution
+        resolutions_to_opt = [parse_resolution_input(r.strip(), '1d') for r in raw_res.split(',') if r.strip()]
+        
+        for sym in symbols_to_opt:
+            for res in resolutions_to_opt:
+                print(BOLD + GREEN + f"\n>>> Starting Strategy Optimization Process for {sym} ({res}) <<<" + RESET)
+                if args.meta_optimize:
+                    run_meta_genetic_optimization(sym, res, args.meta_generations, args.meta_pop_size)
+                else:
+                    run_genetic_optimization(sym, res, args.opt_generations)
         sys.exit(0)
 
     if args.account_info:
